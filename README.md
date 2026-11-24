@@ -10,7 +10,7 @@ Si installa sulla schermata Home come un'app (PWA), come Cantina.
 - **Ricorrenti**: stipendio, affitto, bollette… con le previsioni dei mesi futuri.
 - **Salvadanai**: soldi messi da parte, con obiettivo e versamenti ricorrenti. Non contano come spesa.
 - **Dati**: backup JSON, esportazione CSV per Excel.
-- **Investimenti**: registro delle operazioni (acquisti, vendite, dividendi; import delle conferme d'esecuzione e dell'*Estratto del patrimonio* di Trade Republic, che fa da controllo), quantità e prezzo medio calcolati dalle operazioni, valore, guadagno latente e realizzato, ripartizione, andamento e notizie in italiano su ogni titolo. Prezzi da Tradegate (euro, per ISIN) e CoinGecko, notizie da Google News: li aggiorna ogni sera la funzione `supabase/functions/aggiorna-mercati` (Cron di Supabase) e il pulsante *Aggiorna ora*.
+- **Investimenti**: registro delle operazioni (acquisti, vendite, dividendi; import delle conferme d'esecuzione e dell'*Estratto del patrimonio* di Trade Republic e dell'estratto conto del conto titoli Revolut, che fanno da controllo), più broker per lo stesso titolo, operazioni in dollari convertite col cambio BCE del giorno (frankfurter.dev), quantità e prezzo medio calcolati dalle operazioni, valore, guadagno latente e realizzato, ripartizione, andamento e notizie in italiano su ogni titolo. Prezzi da Tradegate (euro, per ISIN) e CoinGecko, notizie da Google News: li aggiorna ogni sera la funzione `supabase/functions/aggiorna-mercati` (Cron di Supabase) e il pulsante *Aggiorna ora*.
 
 ## Dove sono i dati
 

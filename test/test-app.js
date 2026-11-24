@@ -25,7 +25,7 @@ function loadPage(file) {
     confirm: () => true, alert() {}, location: { protocol: 'file:', origin: '', pathname: '/' }, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v } } };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions};', ctx);
+  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut};', ctx);
   return ctx.__t;
 }
 
@@ -254,6 +254,33 @@ const CASES = [
       { id: 'b', pos: 'X', date: '2026-02-01', type: 'buy', qty: 2, price: 70, fees: 0, taxes: 0 }];
     t.syncPositions();
     return t.S.positions[0].qty === 4 && t.S.positions[0].avg === 60;
+  }],
+  // ---------- Revolut, dollari e più broker (numeri inventati) ----------
+  ['Revolut: legge titoli e operazioni in dollari dall\'estratto conto', t => {
+    t.S.positions = [];
+    const r = t.parseRevolut(['Account Statement', 'Period 01 Mar 2026 - 31 Mar 2026', 'USD Portfolio breakdown',
+      'Symbol Company ISIN Quantity Price Value % of Portfolio',
+      'EXMP Example US0000000003 1.5 US$1,200.00 US$1,800.00 90.00%', 'WRLD World Index IE0000000002 0.25 US$800.00 US$200.00 10.00%',
+      'Positions Value US$2,000.00 100.00%', 'Cash value US$0.10 0.00%', 'USD Transactions',
+      '04 Mar 2026 14:30:39 GMT EXMP Trade - Market 0.5 US$1,200.00 Buy US$600 US$0 US$0.50',
+      '05 Mar 2026 10:00:00 GMT Cash top-up US$10.00 US$0 US$0']);
+    const tr = r.trades[0];
+    return r.date === '2026-03-31' && r.positions.length === 2 && r.positions[0].qty === 1.5 && r.positions[0].price === 1200
+      && r.ok && r.trades.length === 1 && tr.type === 'buy' && tr.isin === 'US0000000003' && tr.currency === 'USD' && tr.fees === 0.5 && tr.ok;
+  }],
+  ['operazioni in dollari: il prezzo medio in euro usa il cambio di ogni operazione', t => {
+    t.S.trades = [{ id: 'a', pos: 'X', date: '2026-01-01', type: 'buy', qty: 1, price: 100, fees: 0, taxes: 0, broker: 'Revolut', currency: 'USD', fx: 0.9 },
+      { id: 'b', pos: 'X', date: '2026-02-01', type: 'buy', qty: 1, price: 100, fees: 0, taxes: 0, broker: 'Revolut', currency: 'USD', fx: 0.8 }];
+    const s = t.posStats('X');
+    return s.qty === 2 && s.avg === 85 && s.cost === 170;
+  }],
+  ['stesso titolo su due broker: quantità separate per i controlli, totale nel portafoglio', t => {
+    t.S.trades = [{ id: 'a', pos: 'X', date: '2026-01-01', type: 'open', qty: 1, price: 400, fees: 0, taxes: 0, broker: 'Trade Republic', currency: 'EUR', fx: 1 },
+      { id: 'b', pos: 'X', date: '2026-01-05', type: 'open', qty: 0.5, price: null, fees: 0, taxes: 0, broker: 'Revolut', currency: 'USD', fx: 0.9 }];
+    const x = { ok: true, isin: 'X', type: 'buy', qty: 0.1, price: 450, amount: 45, ref: 'n1' };
+    return t.posStats('X').qty === 1.5 && t.posStats('X', 'Revolut').qty === 0.5 && t.posStats('X', 'Trade Republic').avg === 400
+      && t.tradeStatus({ ...x, broker: 'Revolut', date: '2026-01-04' }).key === 'before'
+      && t.tradeStatus({ ...x, broker: 'Trade Republic', date: '2026-01-04' }).key === 'new';
   }],
 ];
 

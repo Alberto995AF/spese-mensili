@@ -264,7 +264,7 @@ function resetRemote(){DB.remote={mov:new Map(),rec:new Map(),imp:new Map(),inv:
 resetRemote();
 const normMov=m=>({id:m.id,date:m.date,desc:m.desc||'',amount:round2(+m.amount||0),type:m.type==='entrata'?'entrata':'uscita',cat:m.cat||'',account:m.account||'',note:m.note||'',recId:m.recId||'',occ:m.occ||'',imp:m.imp||'',mese:m.mese||''});
 const normPos=p=>({id:p.id,isin:p.isin||'',name:p.name||'',kind:p.kind||'azione',qty:+p.qty||0,avg:p.avg==null||p.avg===''?null:+p.avg,refPrice:p.refPrice==null?null:+p.refPrice,refDate:p.refDate||'',newsQuery:p.newsQuery||'',cgId:p.cgId||'',broker:p.broker||'',archived:!!p.archived});
-const normTrade=t=>({id:t.id,pos:t.pos||'',date:t.date||'',type:t.type||'buy',qty:+t.qty||0,price:t.price==null||t.price===''?null:+t.price,amount:t.amount==null||t.amount===''?null:+t.amount,fees:+t.fees||0,taxes:+t.taxes||0,src:t.src||'',ref:t.ref||'',note:t.note||''});
+const normTrade=t=>({id:t.id,pos:t.pos||'',date:t.date||'',type:t.type||'buy',qty:+t.qty||0,price:t.price==null||t.price===''?null:+t.price,amount:t.amount==null||t.amount===''?null:+t.amount,fees:+t.fees||0,taxes:+t.taxes||0,src:t.src||'',ref:t.ref||'',note:t.note||'',broker:t.broker||(/trade republic|estratto del patrimonio/i.test(t.src||'')?'Trade Republic':''),currency:t.currency||'EUR',fx:t.fx==null||t.fx===''?1:+t.fx});
 const normRec=r=>({id:r.id,name:r.name||'',type:r.type==='entrata'?'entrata':'uscita',amount:round2(+r.amount||0),freq:r.freq||'m',start:r.start||'',end:r.end||'',cat:r.cat||'',account:r.account||'',paused:!!r.paused,skip:Array.isArray(r.skip)?[...r.skip]:[]});
 function setRemote(kind,id,data){
   const R=DB.remote;
@@ -960,22 +960,34 @@ function openJar(id){
 const INV_KIND={azione:'Azione',etf:'ETF / fondo',obbligazione:'Obbligazione / BTP',cripto:'Cripto'};
 const INV_COLOR={azione:'#2563eb',etf:'#0d9488',obbligazione:'#ca8a04',cripto:'#7c3aed'};
 const mkt=id=>(DB.remote.mkt&&DB.remote.mkt.get(id))||{};
-/* registro delle operazioni: quantità e prezzo medio si calcolano da qui (costo medio ponderato) */
+/* registro delle operazioni: quantità e prezzo medio si calcolano da qui (costo medio ponderato, in euro).
+   Ogni operazione ricorda broker, valuta e cambio (euro per unità di valuta, BCE del giorno). */
 const TRD_TYPE={open:'Situazione iniziale',buy:'Acquisto',sell:'Vendita',div:'Dividendo'};
 const TRD_ORDER={open:0,buy:1,sell:2,div:3};
-const tradesOf=pos=>(S.trades||[]).filter(t=>t.pos===pos).sort((a,b)=>a.date.localeCompare(b.date)||TRD_ORDER[a.type]-TRD_ORDER[b.type]);
-function posStats(pos){
-  let qty=0,cost=0,known=true,realized=0,divs=0,fees=0;const ts=tradesOf(pos);
-  for(const t of ts){
-    if(t.type==='open'||t.type==='buy'){qty+=t.qty;fees+=t.fees||0;if(t.price==null) known=false;else cost+=t.qty*t.price+(t.fees||0)}
-    else if(t.type==='sell'){const out=Math.min(t.qty,qty),avg=qty?cost/qty:0;if(known&&t.price!=null) realized+=out*t.price-(t.fees||0)-(t.taxes||0)-out*avg;cost-=out*avg;qty-=out;fees+=t.fees||0}
-    else if(t.type==='div') divs+=(t.amount||0)-(t.taxes||0);
+const BROKERS=['Trade Republic','Revolut','Altro'];
+const tradesOf=(pos,broker)=>(S.trades||[]).filter(t=>t.pos===pos&&(!broker||(t.broker||'')===broker)).sort((a,b)=>a.date.localeCompare(b.date)||TRD_ORDER[a.type]-TRD_ORDER[b.type]);
+const fxOf=t=>t.currency&&t.currency!=='EUR'?(+t.fx||0):1;
+const money=(v,cur)=>v==null?'':cur&&cur!=='EUR'?Number(v).toLocaleString('it-IT',{style:'currency',currency:cur,maximumFractionDigits:4}):eur(v);
+function posStats(pos,broker){
+  let qty=0,cost=0,known=true,realized=0,divs=0,fees=0;const ts=tradesOf(pos,broker);
+  for(const t of ts){const fx=fxOf(t);
+    if(t.type==='open'||t.type==='buy'){qty+=t.qty;fees+=(t.fees||0)*fx;if(t.price==null||!fx) known=false;else cost+=(t.qty*t.price+(t.fees||0))*fx}
+    else if(t.type==='sell'){const out=Math.min(t.qty,qty),avg=qty?cost/qty:0;if(known&&t.price!=null&&fx) realized+=(out*t.price-(t.fees||0)-(t.taxes||0))*fx-out*avg;cost-=out*avg;qty-=out;fees+=(t.fees||0)*fx}
+    else if(t.type==='div') divs+=((t.amount||0)-(t.taxes||0))*fx;
   }
-  qty=Math.round(qty*1e6)/1e6;if(qty<=0){qty=0;cost=0}
-  return {qty,avg:known&&qty>0?Math.round(cost/qty*1e4)/1e4:null,cost:known?round2(cost):null,realized:known?round2(realized):null,divs:round2(divs),fees:round2(fees),n:ts.length,open:ts.find(t=>t.type==='open')||null};
+  qty=Math.round(qty*1e8)/1e8;if(qty<=0){qty=0;cost=0}
+  return {qty,avg:known&&qty>0?Math.round(cost/qty*1e4)/1e4:null,cost:known?round2(cost):null,realized:known?round2(realized):null,divs:round2(divs),fees:round2(fees),n:ts.length,
+    open:ts.find(t=>t.type==='open')||null,opens:ts.filter(t=>t.type==='open'),brokers:[...new Set(ts.map(t=>t.broker||'').filter(Boolean))]};
 }
 function syncPositions(){ // riporta su ogni titolo quantità e prezzo medio calcolati dalle operazioni
   S.positions=(S.positions||[]).map(p=>{if(!tradesOf(p.id).length) return p;const st=posStats(p.id);return {...p,qty:st.qty,avg:st.avg}});
+}
+/* cambio ufficiale BCE (euro per 1 unità di valuta) da frankfurter.dev, con il giorno lavorativo precedente nei festivi */
+const fxCache={};
+async function fxRate(cur,date){
+  if(!cur||cur==='EUR') return 1;const k=cur+date;if(fxCache[k]) return fxCache[k];
+  const r=await fetch(`https://api.frankfurter.dev/v1/${date}?base=${cur}&symbols=EUR`);if(!r.ok) throw new Error('cambio BCE non disponibile');
+  const v=(await r.json()).rates?.EUR;if(!v) throw new Error('cambio BCE non disponibile');return fxCache[k]=v;
 }
 function invRows(){
   return (S.positions||[]).filter(p=>!p.archived&&p.qty>0).map(p=>{
@@ -996,7 +1008,7 @@ function viewInv(){
   const rows=invRows(),t=invTotals(),st=mkt('_stato');
   let h=`<div class="stack">${demoBanner()}
   <div class="row between"><div class="small muted">${st.at?`Prezzi e notizie aggiornati il ${new Date(st.at).toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'})}`:'Prezzi e notizie non ancora aggiornati'}</div>
-    <div class="row"><button class="btn" data-act="invimp">Importa PDF Trade Republic</button><button class="btn" data-act="trdnew">+ Operazione</button><button class="btn" data-act="posnew">+ Titolo</button><button class="btn primary" data-act="invupd">Aggiorna ora</button></div></div>`;
+    <div class="row"><button class="btn" data-act="invimp">Importa PDF del broker</button><button class="btn" data-act="trdnew">+ Operazione</button><button class="btn" data-act="posnew">+ Titolo</button><button class="btn primary" data-act="invupd">Aggiorna ora</button></div></div>`;
   if(!rows.length) return h+`<div class="card empty">Nessun titolo. Importa l'<b>Estratto del patrimonio</b> di Trade Republic (PDF) oppure aggiungi un titolo a mano.<br><br><button class="btn primary" data-act="invimp">Importa estratto Trade Republic</button></div></div>`;
   h+=`<div class="grid kpis">${kpi('Valore attuale',eur(t.value),`${t.n} titoli`)}
     ${kpi('Investito',t.cost?eur(t.cost):'—',t.missingAvg?`manca il prezzo medio di ${t.missingAvg} ${t.missingAvg===1?'titolo':'titoli'}`:'somma dei prezzi medi di acquisto')}
@@ -1008,7 +1020,7 @@ function viewInv(){
     <div class="legend" style="margin-top:8px">${Object.entries(byKind).map(([k,v])=>`<span><i style="background:${INV_COLOR[k]||'#9ca3af'}"></i>${INV_KIND[k]||k} ${Math.round(v/t.value*100)}% · ${eur(v)}</span>`).join('')}</div></div>`;
   // titoli
   h+=`<div class="card" style="padding:0"><div class="tblwrap" style="border:0"><table><thead><tr><th>Titolo</th><th class="num">Quantità</th><th class="num">Prezzo</th><th class="num">Valore</th><th class="num">Prezzo medio</th><th class="num">Guadagno</th><th class="num">Peso</th></tr></thead><tbody>
-  ${rows.map(x=>`<tr class="clk" data-act="posedit" data-id="${esc(x.p.id)}"><td><b>${esc(x.p.name)}</b><div class="small muted">${esc(INV_KIND[x.p.kind]||'')} · ${esc(x.p.isin||x.p.cgId)}${x.m.err?' · <span class="neg" title="'+esc(x.m.err)+'">prezzo non aggiornato</span>':''}${!x.live?' · prezzo dell\'estratto':''}</div></td>
+  ${rows.map(x=>`<tr class="clk" data-act="posedit" data-id="${esc(x.p.id)}"><td><b>${esc(x.p.name)}</b><div class="small muted">${esc(INV_KIND[x.p.kind]||'')} · ${esc(x.p.isin||x.p.cgId)}${(b=>b.length?' · '+esc(b.join(' + ')):'')(posStats(x.p.id).brokers)}${x.m.err?' · <span class="neg" title="'+esc(x.m.err)+'">prezzo non aggiornato</span>':''}${!x.live?' · prezzo dell\'estratto':''}</div></td>
     <td class="num">${qtyFmt(x.p.qty)}</td>
     <td class="num">${x.price!=null?eur(x.price):'—'}${x.m.changePct!=null?`<div class="small ${x.m.changePct>=0?'pos':'neg'}">${pct(x.m.changePct)}</div>`:''}</td>
     <td class="num"><b>${x.value!=null?eur(x.value):'—'}</b></td>
@@ -1021,9 +1033,9 @@ function viewInv(){
   const ops=[...(S.trades||[])].sort((a,b)=>b.date.localeCompare(a.date)||TRD_ORDER[b.type]-TRD_ORDER[a.type]).slice(0,40);
   h+=`<div class="card"><div class="row between" style="margin-bottom:8px"><h2 style="margin:0">Operazioni</h2><button class="btn sm" data-act="trdnew">+ Operazione</button></div>
   ${ops.length?`<div class="tblwrap"><table class="small"><thead><tr><th>Data</th><th>Tipo</th><th>Titolo</th><th class="num">Quantità</th><th class="num">Prezzo</th><th class="num">Importo</th></tr></thead><tbody>
-  ${ops.map(t=>`<tr class="clk" data-act="trdedit" data-id="${esc(t.id)}"><td class="nowrap">${fmtDate(t.date)}</td><td><span class="chip">${TRD_TYPE[t.type]}</span></td><td>${esc(name(t.pos))}</td>
-    <td class="num">${t.type==='div'?'':qtyFmt(t.qty)}</td><td class="num">${t.price!=null?eur(t.price):t.type==='open'?'<span class="muted">da inserire</span>':''}</td>
-    <td class="num">${t.type==='div'?eur(t.amount||0):t.price!=null?eur(t.qty*t.price):''}${t.fees?`<div class="muted">comm. ${eur(t.fees)}</div>`:''}</td></tr>`).join('')}</tbody></table></div>
+  ${ops.map(t=>`<tr class="clk" data-act="trdedit" data-id="${esc(t.id)}"><td class="nowrap">${fmtDate(t.date)}</td><td><span class="chip">${TRD_TYPE[t.type]}</span></td><td>${esc(name(t.pos))}${t.broker?`<div class="muted">${esc(t.broker)}</div>`:''}</td>
+    <td class="num">${t.type==='div'?'':qtyFmt(t.qty)}</td><td class="num">${t.price!=null?money(t.price,t.currency):t.type==='open'?'<span class="muted">da inserire</span>':''}</td>
+    <td class="num">${t.type==='div'?money(t.amount||0,t.currency):t.price!=null?money(t.qty*t.price,t.currency):''}${t.fees?`<div class="muted">comm. ${money(t.fees,t.currency)}</div>`:''}</td></tr>`).join('')}</tbody></table></div>
   <p class="small muted" style="margin:8px 0 0">Quantità e prezzo medio di ogni titolo si calcolano da queste operazioni. Per aggiungerne una importa la conferma d'esecuzione di Trade Republic oppure usa <i>+ Operazione</i>.</p>`
   :`<div class="empty">Nessuna operazione registrata.</div>`}</div>`;
   // notizie
@@ -1091,7 +1103,7 @@ async function pdfTextLines(file){
 /* conferma d'esecuzione di Trade Republic: acquisto, piano d'accumulo, vendita, dividendo */
 function parseTRTrade(lines){
   const t=lines.join('\n');let m;
-  const r={type:'',date:'',ref:'',isin:'',name:'',qty:null,price:null,amount:null,fees:0,taxes:0,total:null};
+  const r={broker:'Trade Republic',currency:'EUR',fx:1,type:'',date:'',ref:'',isin:'',name:'',qty:null,price:null,amount:null,fees:0,taxes:0,total:null};
   if((m=t.match(/\b(?:ESECUZIONE|ORDINE|OPERAZIONE)\s+([0-9a-f]{4}-[0-9a-f]{4})/i))) r.ref=m[1];
   if((m=t.match(/(?:esecuzione|eseguit\w*|pagamento|distribuzione)[^\n]*?\bil (\d{2})\.(\d{2})\.(\d{4})/i))||(m=t.match(/\bDATA\s+(\d{2})\.(\d{2})\.(\d{4})/))) r.date=`${m[3]}-${m[2]}-${m[1]}`;
   // il tipo si legge dal contenuto, non dal piè di pagina legale ("…esente da imposte sulle vendite…")
@@ -1107,11 +1119,38 @@ function parseTRTrade(lines){
   r.ok=!!(r.type&&r.date&&r.isin&&r.qty&&r.price!=null&&r.amount!=null)&&(r.type==='div'||Math.abs(r.qty*r.price-r.amount)<=Math.max(0.05,r.amount*0.002))&&(r.total==null||Math.abs(net-r.total)<0.02);
   return r;
 }
-/* che cosa succede a un'operazione importata: nuova, già presente o già compresa nella situazione iniziale */
+/* estratto conto del conto titoli Revolut (in inglese, importi in US$ o €) */
+const EN_MON={Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12'};
+const enNum=s=>{const n=parseFloat(String(s).replace(/[^\d.\-]/g,''));return isFinite(n)?n:null};
+const enDate=(d,mo,y)=>EN_MON[mo]?`${y}-${EN_MON[mo]}-${d.padStart(2,'0')}`:'';
+const curOf=s=>/US\$/.test(s)?'USD':/€/.test(s)?'EUR':/£/.test(s)?'GBP':'';
+function parseRevolut(lines){
+  const r={broker:'Revolut',date:'',positions:[],trades:[],totals:{},sums:{}};let m,sec='';
+  for(const l of lines){
+    if(!r.date&&(m=l.match(/Period\s+\d{1,2} \w{3} \d{4}\s*-\s*(\d{1,2}) (\w{3}) (\d{4})/))) r.date=enDate(m[1],m[2],m[3]);
+    if((m=l.match(/^(USD|EUR|GBP) Portfolio breakdown/))) sec=m[1];
+    if((m=l.match(/^([A-Z0-9.\-]{1,12})\s+(.+?)\s+([A-Z]{2}[A-Z0-9]{9}\d)\s+([\d.,]+)\s+(US\$|€|£)\s?([\d.,]+)\s+(?:US\$|€|£)\s?([\d.,]+)\s+[\d.]+%$/))){
+      r.positions.push({symbol:m[1],name:m[2].trim(),isin:m[3],qty:enNum(m[4]),price:enNum(m[6]),value:enNum(m[7]),currency:curOf(m[5])});continue}
+    if(sec&&(m=l.match(/^Positions Value\s+(US\$|€|£)\s?([\d.,]+)\s+[\d.]+%$/))) r.totals[curOf(m[1])]=enNum(m[2]);
+    if((m=l.match(/^(\d{1,2}) (\w{3}) (\d{4}) (\d{2}:\d{2}:\d{2}) GMT\s+([A-Z0-9.\-]+)\s+(.+?)\s+([\d.,]+)\s+(US\$|€|£)\s?([\d.,]+)\s+(Buy|Sell)\s+(?:US\$|€|£)\s?([\d.,]+)\s+(?:US\$|€|£)\s?([\d.,]+)\s+(?:US\$|€|£)\s?([\d.,]+)$/i))){
+      const date=enDate(m[1],m[2],m[3]);
+      r.trades.push({broker:'Revolut',currency:curOf(m[8]),type:m[10].toLowerCase()==='sell'?'sell':'buy',date,symbol:m[5],qty:enNum(m[7]),price:enNum(m[9]),amount:enNum(m[11]),fees:round2((enNum(m[12])||0)+(enNum(m[13])||0)),taxes:0,ref:`RV-${date}T${m[4]}-${m[5]}-${m[7]}`});continue}
+    if((m=l.match(/^(\d{1,2}) (\w{3}) (\d{4}) (\d{2}:\d{2}:\d{2}) GMT\s+([A-Z0-9.\-]+)\s+.*?dividend.*?(US\$|€|£)\s?([\d.,]+)/i))){
+      const date=enDate(m[1],m[2],m[3]);
+      r.trades.push({broker:'Revolut',currency:curOf(m[6]),type:'div',date,symbol:m[5],qty:0,price:null,amount:enNum(m[7]),fees:0,taxes:0,ref:`RV-${date}T${m[4]}-${m[5]}-div`})}
+  }
+  const bySym=new Map(r.positions.map(x=>[x.symbol,x]));
+  for(const t of r.trades){const x=bySym.get(t.symbol)||(S.positions||[]).find(p=>(p.symbol||'')===t.symbol);t.isin=x?.isin||'';t.name=x?.name||t.symbol;
+    t.ok=!!(t.isin&&t.date&&(t.type==='div'?t.amount:t.qty&&t.price!=null))&&(t.type==='div'||Math.abs(t.qty*t.price-t.amount)<=Math.max(0.05,t.amount*0.005))}
+  for(const x of r.positions) r.sums[x.currency]=round2((r.sums[x.currency]||0)+x.value);
+  r.ok=Object.keys(r.totals).every(c=>Math.abs((r.sums[c]||0)-r.totals[c])<0.02);
+  return r;
+}
+/* che cosa succede a un'operazione importata: nuova, già presente o già compresa nella situazione iniziale di quel broker */
 function tradeStatus(x){
   if(!x.ok) return {key:'bad',label:'⚠ non riconosciuta: inseriscila a mano'};
   if(x.ref&&(S.trades||[]).some(t=>t.ref===x.ref)) return {key:'dup',label:'già importata'};
-  const open=(S.trades||[]).find(t=>t.pos===x.isin&&t.type==='open');
+  const open=(S.trades||[]).find(t=>t.pos===x.isin&&t.type==='open'&&(t.broker||'')===(x.broker||''));
   if(open&&x.date<=open.date) return {key:'before',label:`già compresa nella situazione al ${fmtDate(open.date)}`};
   return {key:'new',label:'nuova'};
 }
@@ -1119,50 +1158,67 @@ async function importTRFiles(files){
   const trades=[];
   for(const f of files){
     let lines;try{lines=await pdfTextLines(f)}catch(e){await notice(`Non sono riuscito a leggere ${f.name}: ${e.message}`,'File non letto');continue}
-    if(lines.some(l=>/ESTRATTO DEL PATRIMONIO/i.test(l))){await importHoldings(parseTRHoldings(lines));continue}
+    if(lines.some(l=>/Revolut Securities/i.test(l))){
+      const r=parseRevolut(lines);
+      if(!r.positions.length&&!r.trades.length){await notice(`In ${f.name} non ho trovato titoli né operazioni.`,'Estratto Revolut');continue}
+      try{
+        const curs=[...new Set([...r.positions.map(x=>x.currency),...r.trades.map(t=>t.currency)])].filter(c=>c&&c!=='EUR');
+        const fxEnd={};for(const c of curs) fxEnd[c]=await fxRate(c,r.date);
+        for(const x of r.positions){x.fx=fxEnd[x.currency]||1;x.priceEur=round2(x.price*x.fx*1e4)/1e4}
+        for(const t of r.trades) t.fx=await fxRate(t.currency,t.date);
+      }catch(e){await notice('Non riesco a leggere il cambio BCE: '+e.message+'. Riprova con la connessione attiva.','Cambio non disponibile');continue}
+      if(r.positions.length) await importHoldings(r);
+      trades.push(...r.trades.map(t=>({...t,file:f.name})));continue}
+    if(lines.some(l=>/ESTRATTO DEL PATRIMONIO/i.test(l))){const r=parseTRHoldings(lines);r.broker='Trade Republic';r.positions.forEach(x=>{x.currency='EUR';x.fx=1;x.priceEur=x.price});await importHoldings(r);continue}
     trades.push({...parseTRTrade(lines),file:f.name});
   }
-  if(!trades.length) return;
+  if(trades.length) showTradesDialog(trades);
+}
+function showTradesDialog(trades){
   const rows=trades.map(x=>({x,st:tradeStatus(x)}));
-  const f=openDlg(`<form><div class="dlg-h"><h3>Operazioni da importare</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  openDlg(`<form><div class="dlg-h"><h3>Operazioni da importare</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
   <div style="padding:12px 16px;display:grid;gap:10px"><div class="tblwrap"><table class="small"><thead><tr><th></th><th>Data</th><th>Operazione</th><th class="num">Quantità</th><th class="num">Prezzo</th><th class="num">Totale</th><th>Stato</th></tr></thead><tbody>
   ${rows.map(({x,st},i)=>`<tr><td><input type="checkbox" name="t${i}" ${st.key==='new'?'checked':''} ${st.key==='bad'?'disabled':''}></td><td class="nowrap">${x.date?fmtDate(x.date):'—'}</td>
-    <td><b>${TRD_TYPE[x.type]||'?'}</b> ${esc(x.name||x.file)}<div class="muted">${esc(x.isin)}${x.ref?' · '+esc(x.ref):''}</div></td>
-    <td class="num">${x.qty!=null?qtyFmt(x.qty):''}</td><td class="num">${x.price!=null?eur(x.price):''}</td>
-    <td class="num">${x.total!=null?eur(x.total):x.amount!=null?eur(x.amount):''}${x.fees?`<div class="muted">comm. ${eur(x.fees)}</div>`:''}${x.taxes?`<div class="muted">tasse ${eur(x.taxes)}</div>`:''}</td>
+    <td><b>${TRD_TYPE[x.type]||'?'}</b> ${esc(x.name||x.file)}<div class="muted">${esc(x.broker||'')} · ${esc(x.isin)}${x.currency&&x.currency!=='EUR'?` · cambio BCE ${String(x.fx).replace('.',',')}`:''}</div></td>
+    <td class="num">${x.qty?qtyFmt(x.qty):''}</td><td class="num">${x.price!=null?money(x.price,x.currency):''}</td>
+    <td class="num">${money(x.total??x.amount,x.currency)}${x.currency&&x.currency!=='EUR'&&x.amount!=null?`<div class="muted">${eur(x.amount*x.fx)}</div>`:''}${x.fees?`<div class="muted">comm. ${money(x.fees,x.currency)}</div>`:''}${x.taxes?`<div class="muted">tasse ${money(x.taxes,x.currency)}</div>`:''}</td>
     <td class="${st.key==='new'?'pos':st.key==='bad'?'neg':'muted'}">${esc(st.label)}</td></tr>`).join('')}</tbody></table></div>
-  <p class="small muted" style="margin:0">Le operazioni con data uguale o precedente alla situazione iniziale di quel titolo sono già comprese nelle quantità e restano escluse, salvo che le spunti tu.</p></div>
+  <p class="small muted" style="margin:0">Le operazioni con data uguale o precedente alla situazione iniziale di quel titolo presso quel broker sono già comprese nelle quantità e restano escluse, salvo che le spunti tu.</p></div>
   <div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Registra le operazioni</button></div></form>`,
   fd=>{
     let n=0;S.trades=[...(S.trades||[])];S.positions=[...(S.positions||[])];
     rows.forEach(({x},i)=>{if(!fd.get('t'+i)) return;
-      if(!S.positions.some(p=>p.id===x.isin)){const kind=guessKind(x.name);S.positions.push({id:x.isin,isin:x.isin,name:x.name,kind,qty:0,avg:null,refPrice:x.price,refDate:x.date,broker:'Trade Republic',newsQuery:defaultNewsQuery(x.name,kind),archived:false})}
-      S.trades.push({id:uid(),pos:x.isin,date:x.date,type:x.type,qty:x.qty,price:x.type==='div'?null:x.price,amount:x.amount,fees:x.fees,taxes:x.taxes,src:'Trade Republic',ref:x.ref||''});n++});
+      if(!S.positions.some(p=>p.id===x.isin)){const kind=guessKind(x.name);S.positions.push({id:x.isin,isin:x.isin,name:x.name,kind,qty:0,avg:null,refPrice:x.price!=null?round2(x.price*(x.fx||1)*1e4)/1e4:null,refDate:x.date,broker:x.broker,newsQuery:defaultNewsQuery(x.name,kind),archived:false})}
+      S.trades.push({id:uid(),pos:x.isin,date:x.date,type:x.type,qty:x.qty||0,price:x.type==='div'?null:x.price,amount:x.amount,fees:x.fees||0,taxes:x.taxes||0,src:x.broker,ref:x.ref||'',broker:x.broker,currency:x.currency||'EUR',fx:x.fx||1});n++});
     if(!n){toast('Nessuna operazione selezionata');return false}
     syncPositions();save();toast(`Registrate ${n} operazioni`);setTimeout(()=>refreshMarket(false),300);
   });
 }
+/* estratto del patrimonio (Trade Republic) o del conto titoli (Revolut): crea la situazione iniziale dei titoli nuovi e controlla gli altri */
 async function importHoldings(r){
-  if(!r.positions.length) return notice("Nel PDF non ho trovato titoli. Serve l'«Estratto del patrimonio» di Trade Republic.",'Nessun titolo trovato');
-  const cur=new Map((S.positions||[]).map(p=>[p.id,p]));
-  const lines=r.positions.map(x=>{const o=cur.get(x.isin),hasOps=tradesOf(x.isin).length>0,st=hasOps?posStats(x.isin):null;
+  const broker=r.broker||'Trade Republic';
+  if(!r.positions.length) return notice("Nel PDF non ho trovato titoli. Serve l'estratto con l'elenco dei titoli posseduti.",'Nessun titolo trovato');
+  const lines=r.positions.map(x=>{const hasOps=tradesOf(x.isin,broker).length>0,st=hasOps?posStats(x.isin,broker):null;
     return {...x,hasOps,status:!hasOps?`situazione iniziale al ${fmtDate(r.date)}`:Math.abs(st.qty-x.qty)<1e-6?'✔ coincide con le operazioni':`⚠ le operazioni danno ${qtyFmt(st.qty)}, l'estratto ${qtyFmt(x.qty)}: manca un'operazione?`,warn:hasOps&&Math.abs(st.qty-x.qty)>=1e-6}});
-  const gone=(S.positions||[]).filter(p=>!p.archived&&p.qty>0&&p.broker==='Trade Republic'&&!r.positions.some(x=>x.isin===p.id));
-  const ok=r.total==null||Math.abs(r.total-r.sum)<0.02;
-  return new Promise(res=>{openDlg(`<form><div class="dlg-h"><h3>Estratto del patrimonio${r.date?' al '+fmtDate(r.date):''}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  const gone=(S.positions||[]).filter(p=>!p.archived&&posStats(p.id,broker).qty>0&&!r.positions.some(x=>x.isin===p.id));
+  const cur=r.positions[0]?.currency||'EUR';
+  const okMsg=r.totals?(r.ok?`✔ I conti tornano: ${r.positions.length} titoli per ${Object.entries(r.sums).map(([c,v])=>money(v,c)).join(' + ')}, come il totale del documento.`:`⚠ La somma dei titoli letti non coincide con il totale del documento: controlla prima di confermare.`)
+    :(r.total==null||Math.abs(r.total-r.sum)<0.02?`✔ I conti tornano: ${r.positions.length} titoli per ${eur(r.sum)}, come il totale del documento.`:`⚠ La somma dei titoli letti (${eur(r.sum)}) non coincide con il totale del documento (${eur(r.total)}): controlla prima di confermare.`);
+  const ok=okMsg.startsWith('✔');
+  return new Promise(res=>{openDlg(`<form><div class="dlg-h"><h3>${esc(broker)}: titoli al ${fmtDate(r.date)}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
   <div style="padding:12px 16px;display:grid;gap:10px">
-    <div class="banner ${ok?'ok':''}"><div>${ok?`✔ I conti tornano: ${r.positions.length} titoli per ${eur(r.sum)}, come il totale del documento.`:`⚠ La somma dei titoli letti (${eur(r.sum)}) non coincide con il totale del documento (${eur(r.total)}): controlla prima di confermare.`}</div></div>
+    <div class="banner ${ok?'ok':''}"><div>${okMsg}</div></div>
     <div class="tblwrap"><table class="small"><thead><tr><th>Titolo</th><th class="num">Quantità</th><th class="num">Valore</th><th>Confronto</th></tr></thead><tbody>
-    ${lines.map(x=>`<tr><td>${esc(x.name)}<div class="muted">${x.isin}</div></td><td class="num">${qtyFmt(x.qty)}</td><td class="num">${eur(x.value)}</td><td class="${x.warn?'neg':''}">${esc(x.status)}</td></tr>`).join('')}
+    ${lines.map(x=>`<tr><td>${esc(x.name)}<div class="muted">${x.isin}</div></td><td class="num">${qtyFmt(x.qty)}</td><td class="num">${money(x.value,x.currency)}${x.currency!=='EUR'?`<div class="muted">${eur(x.value*x.fx)}</div>`:''}</td><td class="${x.warn?'neg':''}">${esc(x.status)}</td></tr>`).join('')}
     ${gone.map(p=>`<tr><td>${esc(p.name)}<div class="muted">${esc(p.isin)}</div></td><td class="num">0</td><td></td><td class="neg">⚠ non più presente: registra la vendita</td></tr>`).join('')}</tbody></table></div>
-    <p class="small muted" style="margin:0">I titoli che hanno già delle operazioni non vengono modificati: l'estratto serve da controllo. Per quelli nuovi registro la situazione iniziale con la quantità dell'estratto; il prezzo medio lo inserisci tu dalla scheda del titolo.</p>
+    <p class="small muted" style="margin:0">I titoli che presso ${esc(broker)} hanno già delle operazioni non vengono modificati: l'estratto serve da controllo. Per quelli nuovi registro la situazione iniziale con la quantità dell'estratto; il prezzo medio lo inserisci tu dalla scheda del titolo${cur!=='EUR'?', nella valuta del broker':''}.</p>
   </div><div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Conferma</button></div></form>`,
   ()=>{
     S.positions=[...(S.positions||[])];S.trades=[...(S.trades||[])];
     for(const x of lines){const i=S.positions.findIndex(p=>p.id===x.isin),o=i>=0?S.positions[i]:null,kind=o?.kind||guessKind(x.name);
-      const np={...(o||{}),id:x.isin,isin:x.isin,name:o?.name||x.name,kind,qty:o?.qty||0,avg:o?.avg??null,refPrice:x.price,refDate:r.date,broker:'Trade Republic',archived:false,newsQuery:o?.newsQuery||defaultNewsQuery(x.name,kind)};
+      const np={...(o||{}),id:x.isin,isin:x.isin,name:o?.name||x.name,kind,qty:o?.qty||0,avg:o?.avg??null,refPrice:x.priceEur??x.price,refDate:r.date,broker:o?.broker||broker,archived:false,newsQuery:o?.newsQuery||defaultNewsQuery(x.name,kind),...(x.symbol?{symbol:x.symbol}:{})};
       if(i>=0) S.positions[i]=np;else S.positions.push(np);
-      if(!x.hasOps) S.trades.push({id:uid(),pos:x.isin,date:r.date,type:'open',qty:x.qty,price:o?.avg??null,amount:null,fees:0,taxes:0,src:'Estratto del patrimonio',ref:''});
+      if(!x.hasOps) S.trades.push({id:uid(),pos:x.isin,date:r.date,type:'open',qty:x.qty,price:null,amount:null,fees:0,taxes:0,src:broker==='Trade Republic'?'Estratto del patrimonio':'Estratto '+broker,ref:'',broker,currency:x.currency||'EUR',fx:x.fx||1});
     }
     syncPositions();save();toast('Portafoglio aggiornato');setTimeout(()=>refreshMarket(false),300);
   });dlg.addEventListener('close',()=>res(),{once:true})});
@@ -1170,65 +1226,75 @@ async function importHoldings(r){
 function openPos(id){
   const p=id?(S.positions||[]).find(x=>x.id===id):{id:'',isin:'',name:'',kind:'azione',qty:'',avg:null,newsQuery:'',cgId:''};if(!p) return;
   const m=mkt(p.id),hist=Object.entries(m.history||{}).sort().slice(-5).reverse(),st=id?posStats(id):null,ops=id?tradesOf(id):[];
-  const fromOps=!!(st&&st.n);
+  const fromOps=!!(st&&st.n),byBroker=fromOps?st.brokers.map(b=>({b,s:posStats(id,b)})).filter(x=>x.s.qty>0):[];
   openDlg(`<form><div class="dlg-h"><h3>${id?esc(p.name):'Nuovo titolo'}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
   <div class="form">
     <label class="full">Nome<input id="psName" name="name" required value="${esc(p.name)}"></label>
     <label>ISIN${id?'':' (es. IE00B4L5Y983)'}<input id="psIsin" name="isin" value="${esc(p.isin)}" ${id?'readonly':''} placeholder="12 caratteri"></label>
     <label>Tipo<select id="psKind" name="kind">${Object.entries(INV_KIND).map(([k,l])=>`<option value="${k}" ${p.kind===k?'selected':''}>${l}</option>`).join('')}</select></label>
     ${fromOps?`<div class="full small" style="display:grid;gap:2px"><div>Quantità <b>${qtyFmt(st.qty)}</b> · prezzo medio <b>${st.avg!=null?eur(st.avg):'—'}</b> <span class="muted">(calcolati da ${st.n} operazioni)</span></div>
+        ${byBroker.length>1?`<div class="muted">${byBroker.map(x=>`${esc(x.b)} ${qtyFmt(x.s.qty)}`).join(' · ')}</div>`:''}
         ${st.realized||st.divs?`<div>Guadagno realizzato <b>${eur(st.realized||0)}</b> · dividendi <b>${eur(st.divs)}</b></div>`:''}</div>
-      ${st.open?`<label class="full">Prezzo medio di acquisto al ${fmtDate(st.open.date)} (€)<input id="psAvg" name="avg" inputmode="decimal" value="${st.open.price==null?'':String(st.open.price).replace('.',',')}" placeholder="dall'app Trade Republic, pagina del titolo"></label>`:''}`
+      ${st.opens.map(o=>`<label class="full">Prezzo medio di acquisto al ${fmtDate(o.date)}${o.broker?' — '+esc(o.broker):''} (${o.currency==='EUR'?'€':o.currency})<input id="psAvg_${esc(o.id)}" name="avg_${esc(o.id)}" inputmode="decimal" value="${o.price==null?'':String(o.price).replace('.',',')}" placeholder="dall'app del broker, pagina del titolo"></label>`).join('')}`
     :`<label>Quantità posseduta<input id="psQty" name="qty" inputmode="decimal" required value=""></label>
-      <label>Prezzo medio di acquisto (€)<input id="psAvg" name="avg" inputmode="decimal" value="" placeholder="facoltativo"></label>`}
+      <label>Prezzo medio di acquisto (€)<input id="psAvg" name="avg" inputmode="decimal" value="" placeholder="facoltativo"></label>
+      <label class="full">Broker<select id="psBroker" name="broker">${BROKERS.map(b=>`<option>${b}</option>`).join('')}</select></label>`}
     <label class="full">Ricerca per le notizie<input id="psNews" name="newsQuery" value="${esc(p.newsQuery)}" placeholder="es. NVIDIA azioni"></label>
     <label class="full">ID CoinGecko (solo cripto)<input id="psCg" name="cgId" value="${esc(p.cgId)}" placeholder="es. bitcoin"></label>
     ${id?`<div class="full small muted">${m.price!=null?`Ultimo prezzo ${eur(m.price)} (${esc(m.source||'')}, ${new Date(m.at).toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'})})`:'Prezzo non ancora aggiornato'}${m.err?` · <span class="neg">${esc(m.err)}</span>`:''}${hist.length?`<br>Chiusure: ${hist.map(([d,v])=>fmtShort(d)+' '+eur(v)).join(' · ')}`:''}</div>
-      ${ops.length?`<div class="full upc">${ops.slice().reverse().slice(0,6).map(t=>`<div class="u" style="grid-template-columns:70px 1fr auto"><span class="small muted">${fmtDate(t.date)}</span><span class="small">${TRD_TYPE[t.type]} ${t.type==='div'?eur(t.amount||0):qtyFmt(t.qty)+(t.price!=null?' a '+eur(t.price):'')}</span><button type="button" class="btn sm ghost" data-act="trdedit" data-id="${esc(t.id)}">✎</button></div>`).join('')}</div>`:''}
+      ${ops.length?`<div class="full upc">${ops.slice().reverse().slice(0,6).map(t=>`<div class="u" style="grid-template-columns:70px 1fr auto"><span class="small muted">${fmtDate(t.date)}</span><span class="small">${TRD_TYPE[t.type]} ${t.type==='div'?money(t.amount||0,t.currency):qtyFmt(t.qty)+(t.price!=null?' a '+money(t.price,t.currency):'')}${t.broker?` <span class="muted">· ${esc(t.broker)}</span>`:''}</span><button type="button" class="btn sm ghost" data-act="trdedit" data-id="${esc(t.id)}">✎</button></div>`).join('')}</div>`:''}
       ${(m.news||[]).length?`<div class="full upc">${m.news.slice(0,5).map(n=>`<div class="u" style="grid-template-columns:62px 1fr"><span class="small muted">${n.date?fmtShort(n.date.slice(0,10)):''}</span><a class="small" href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a></div>`).join('')}</div>`:''}`:''}
   </div><div class="dlg-f">${id?`<button type="button" class="btn danger" data-act="posdel" data-id="${esc(id)}" style="margin-right:auto">Elimina</button><button type="button" class="btn" data-act="trdnew" data-pos="${esc(id)}">+ Operazione</button>`:''}<button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
   fd=>{
     const kind=fd.get('kind'),isin=String(fd.get('isin')||'').trim().toUpperCase(),cgId=String(fd.get('cgId')||'').trim().toLowerCase();
-    const avgRaw=String(fd.get('avg')||'').trim(),avg=avgRaw?parseNum(avgRaw):null;
-    if(avgRaw&&(avg==null||avg<0)){toast('Prezzo medio non valido');return false}
     if(kind!=='cripto'&&!/^[A-Z]{2}[A-Z0-9]{9}\d$/.test(isin)){toast('ISIN non valido: sono 12 caratteri, es. IE00B4L5Y983');return false}
     if(kind==='cripto'&&!cgId){toast("Per le cripto serve l'ID CoinGecko");return false}
     const nid=id||(kind==='cripto'?'CRYPTO-'+cgId.toUpperCase():isin);
     if(!id&&(S.positions||[]).some(x=>x.id===nid&&!x.archived)){toast('Questo titolo è già in portafoglio');return false}
     const name=fd.get('name').trim();
-    S.positions=[...(S.positions||[]).filter(x=>x.id!==nid),{...p,id:nid,isin,name,kind,cgId,newsQuery:fd.get('newsQuery').trim()||defaultNewsQuery(name,kind),archived:false}];
     S.trades=[...(S.trades||[])];
-    if(!fromOps){const qty=parseNum(fd.get('qty'));if(qty==null||qty<0){toast('Quantità non valida');return false}
-      S.trades.push({id:uid(),pos:nid,date:today(),type:'open',qty,price:avg,amount:null,fees:0,taxes:0,src:'manuale',ref:''})}
-    else if(st.open){const i=S.trades.findIndex(t=>t.id===st.open.id);S.trades[i]={...S.trades[i],price:avg}}
+    if(!fromOps){const qty=parseNum(fd.get('qty')),avgRaw=String(fd.get('avg')||'').trim(),avg=avgRaw?parseNum(avgRaw):null;
+      if(qty==null||qty<0){toast('Quantità non valida');return false}
+      if(avgRaw&&(avg==null||avg<0)){toast('Prezzo medio non valido');return false}
+      S.trades.push({id:uid(),pos:nid,date:today(),type:'open',qty,price:avg,amount:null,fees:0,taxes:0,src:'manuale',ref:'',broker:fd.get('broker')||'',currency:'EUR',fx:1})}
+    else for(const o of st.opens){const raw=String(fd.get('avg_'+o.id)||'').trim(),v=raw?parseNum(raw):null;
+      if(raw&&(v==null||v<0)){toast('Prezzo medio non valido');return false}
+      const i=S.trades.findIndex(t=>t.id===o.id);S.trades[i]={...S.trades[i],price:v}}
+    S.positions=[...(S.positions||[]).filter(x=>x.id!==nid),{...p,id:nid,isin,name,kind,cgId,newsQuery:fd.get('newsQuery').trim()||defaultNewsQuery(name,kind),archived:false}];
     syncPositions();save();toast(id?'Titolo aggiornato':'Titolo aggiunto');if(!id) setTimeout(()=>refreshMarket(false),300);
   });
 }
 function openTrade(id,preset={}){
-  const t=id?(S.trades||[]).find(x=>x.id===id):{id:'',pos:preset.pos||'',date:today(),type:'buy',qty:'',price:null,amount:null,fees:0,taxes:0,note:''};if(!t) return;
+  const t=id?(S.trades||[]).find(x=>x.id===id):{id:'',pos:preset.pos||'',date:today(),type:'buy',qty:'',price:null,amount:null,fees:0,taxes:0,note:'',broker:'Trade Republic',currency:'EUR',fx:1};if(!t) return;
   const pos=(S.positions||[]).filter(p=>!p.archived||p.id===t.pos).sort((a,b)=>a.name.localeCompare(b.name));
-  if(!pos.length) return notice('Prima aggiungi il titolo con «+ Titolo» oppure importa un PDF di Trade Republic.','Nessun titolo');
+  if(!pos.length) return notice('Prima aggiungi il titolo con «+ Titolo» oppure importa un PDF del broker.','Nessun titolo');
   const n=v=>v==null||v===''?'':String(v).replace('.',',');
   const f=openDlg(`<form><div class="dlg-h"><h3>${id?'Modifica operazione':'Nuova operazione'}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
   <div class="form">
     <label>Tipo<select id="trType" name="type">${Object.entries(TRD_TYPE).filter(([k])=>k!=='open'||t.type==='open').map(([k,l])=>`<option value="${k}" ${t.type===k?'selected':''}>${l}</option>`).join('')}</select></label>
     <label>Data<input id="trDate" type="date" name="date" required value="${t.date}"></label>
     <label class="full">Titolo<select id="trPos" name="pos">${pos.map(p=>`<option value="${esc(p.id)}" ${p.id===t.pos?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label>
+    <label>Broker<select id="trBroker" name="broker">${[...new Set([...BROKERS,t.broker||''])].filter(Boolean).map(b=>`<option ${b===t.broker?'selected':''}>${esc(b)}</option>`).join('')}</select></label>
+    <label>Valuta<select id="trCur" name="currency">${['EUR','USD','GBP','CHF'].map(c=>`<option ${c===(t.currency||'EUR')?'selected':''}>${c}</option>`).join('')}</select></label>
     <label>Quantità<input id="trQty" name="qty" inputmode="decimal" value="${n(t.qty)}"></label>
-    <label>Prezzo per quota (€)<input id="trPrice" name="price" inputmode="decimal" value="${n(t.price)}"></label>
-    <label>Commissioni (€)<input id="trFees" name="fees" inputmode="decimal" value="${n(t.fees||'')}" placeholder="0"></label>
-    <label>Tasse trattenute (€)<input id="trTaxes" name="taxes" inputmode="decimal" value="${n(t.taxes||'')}" placeholder="0"></label>
-    <label class="full">Importo lordo del dividendo (€)<input id="trAmount" name="amount" inputmode="decimal" value="${n(t.type==='div'?t.amount:'')}" placeholder="solo per i dividendi"></label>
+    <label>Prezzo per quota<input id="trPrice" name="price" inputmode="decimal" value="${n(t.price)}"></label>
+    <label>Commissioni<input id="trFees" name="fees" inputmode="decimal" value="${n(t.fees||'')}" placeholder="0"></label>
+    <label>Tasse trattenute<input id="trTaxes" name="taxes" inputmode="decimal" value="${n(t.taxes||'')}" placeholder="0"></label>
+    <label class="full">Importo lordo del dividendo<input id="trAmount" name="amount" inputmode="decimal" value="${n(t.type==='div'?t.amount:'')}" placeholder="solo per i dividendi"></label>
+    <label class="full">Cambio: euro per 1 unità di valuta (BCE del giorno se lo lasci vuoto)<input id="trFx" name="fx" inputmode="decimal" value="${t.currency&&t.currency!=='EUR'?n(t.fx):''}" placeholder="solo per operazioni non in euro"></label>
     <label class="full">Note<input id="trNote" name="note" value="${esc(t.note||'')}"></label>
   </div><div class="dlg-f">${id?`<button type="button" class="btn danger" data-act="trddel" data-id="${esc(id)}" style="margin-right:auto">Elimina</button>`:''}<button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
   fd=>{
     const type=fd.get('type'),qty=parseNum(fd.get('qty')),price=String(fd.get('price')).trim()?parseNum(fd.get('price')):null,amount=parseNum(fd.get('amount'));
-    const o={...t,id:id||uid(),pos:fd.get('pos'),date:fd.get('date'),type,qty:qty||0,price,fees:Math.abs(parseNum(fd.get('fees'))||0),taxes:Math.abs(parseNum(fd.get('taxes'))||0),note:fd.get('note').trim(),src:t.src||'manuale'};
+    const currency=fd.get('currency'),fxRaw=String(fd.get('fx')||'').trim(),date=fd.get('date');
+    const o={...t,id:id||uid(),pos:fd.get('pos'),date,type,qty:qty||0,price,fees:Math.abs(parseNum(fd.get('fees'))||0),taxes:Math.abs(parseNum(fd.get('taxes'))||0),note:fd.get('note').trim(),src:t.src||'manuale',broker:fd.get('broker'),currency,fx:currency==='EUR'?1:(fxRaw?parseNum(fxRaw):null)};
     if(type==='div'){if(!amount){toast("Scrivi l'importo del dividendo");return false}o.amount=Math.abs(amount);o.price=null}
     else{if(!qty||qty<=0){toast('Quantità non valida');return false}if(type!=='open'&&(price==null||price<0)){toast('Prezzo non valido');return false}o.amount=price!=null?round2(qty*price):null}
-    if(type==='sell'){const others=(S.trades||[]).filter(x=>x.id!==o.id);const saved=S.trades;S.trades=others;const have=posStats(o.pos).qty;S.trades=saved;
-      if(qty>have+1e-9){toast(`Puoi vendere al massimo ${qtyFmt(have)} quote`);return false}}
-    S.trades=[...(S.trades||[]).filter(x=>x.id!==o.id),o];syncPositions();save();toast(id?'Operazione aggiornata':'Operazione registrata');
+    if(type==='sell'){const others=(S.trades||[]).filter(x=>x.id!==o.id);const saved=S.trades;S.trades=others;const have=posStats(o.pos,o.broker).qty;S.trades=saved;
+      if(qty>have+1e-9){toast(`Presso ${o.broker} puoi vendere al massimo ${qtyFmt(have)} quote`);return false}}
+    const commit=()=>{S.trades=[...(S.trades||[]).filter(x=>x.id!==o.id),o];syncPositions();save();toast(id?'Operazione aggiornata':'Operazione registrata')};
+    if(currency!=='EUR'&&!o.fx){fxRate(currency,date).then(v=>{o.fx=v;commit()}).catch(e=>toast('Cambio BCE non disponibile: scrivilo a mano'));return}
+    commit();
   });
 }
 /* ============ RICORRENTI ============ */
