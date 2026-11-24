@@ -25,7 +25,7 @@ function loadPage(file) {
     confirm: () => true, alert() {}, location: { protocol: 'file:', origin: '', pathname: '/' }, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v } } };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind};', ctx);
+  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions};', ctx);
   return ctx.__t;
 }
 
@@ -218,6 +218,43 @@ const CASES = [
   ['notizie: ricerca proposta dal nome del titolo', t =>
     t.defaultNewsQuery('Example Corp.', 'azione') === 'Example azioni' && t.defaultNewsQuery('Esempio S.p.A.', 'azione') === 'Esempio azioni'
       && t.defaultNewsQuery('Core MSCI World USD (Acc)', 'etf') === 'MSCI World'],
+  // ---------- registro delle operazioni (numeri inventati) ----------
+  ['conferma d\'esecuzione: piano d\'accumulo letto come acquisto (anche col piè di pagina sulle "vendite")', t => {
+    const r = t.parseTRTrade(['DATA 10.03.2026', 'ESECUZIONE ab12-cd34', 'PIANO DI ACCUMULO 1111-2222',
+      "Esecuzione del piano d'accumulo il 10.03.2026 su Lang und Schwarz Exchange.",
+      'POSIZIONE QUANTITÀ PREZZO MEDIO IMPORTO', 'World Index USD (Acc) 0,5 Pz. 40,00 EUR 20,00 EUR', 'ISIN: IE0000000002', 'TOTALE 20,00 EUR',
+      "Se non viene mostrata l'IVA, si tratta di un servizio esente da imposte sulle vendite in conformità con la regolamentazione UStG § 4 n. 8."]);
+    return r.ok && r.type === 'buy' && r.date === '2026-03-10' && r.ref === 'ab12-cd34' && r.qty === 0.5 && r.price === 40 && r.amount === 20 && r.isin === 'IE0000000002';
+  }],
+  ['conferma d\'esecuzione: vendita con commissione e tasse', t => {
+    const r = t.parseTRTrade(['DATA 05.06.2026', 'ESECUZIONE ee11-ff22', "Esecuzione dell'ordine di vendita il 05.06.2026.",
+      'Example Corp. 2 Pz. 150,00 EUR 300,00 EUR', 'ISIN: US0000000003', 'Commissione esterna -1,00 EUR', 'Imposta sostitutiva -13,00 EUR', 'TOTALE 286,00 EUR']);
+    return r.ok && r.type === 'sell' && r.fees === 1 && r.taxes === 13 && r.total === 286;
+  }],
+  ['prezzo medio ponderato, vendita e dividendo', t => {
+    t.S.trades = [
+      { id: 'a', pos: 'X', date: '2026-01-01', type: 'open', qty: 10, price: 100, fees: 0, taxes: 0 },
+      { id: 'b', pos: 'X', date: '2026-02-01', type: 'buy', qty: 10, price: 120, fees: 1, taxes: 0 },   // costo 1000 + 1201 = 2201 su 20 quote
+      { id: 'c', pos: 'X', date: '2026-03-01', type: 'sell', qty: 5, price: 130, fees: 1, taxes: 10 },  // costo medio 110,05
+      { id: 'd', pos: 'X', date: '2026-04-01', type: 'div', qty: 0, price: null, amount: 20, fees: 0, taxes: 5.2 }];
+    const s = t.posStats('X');
+    return s.qty === 15 && s.avg === 110.05 && s.realized === 88.75 && s.divs === 14.8;
+  }],
+  ['import: operazione già importata o già compresa nella situazione iniziale', t => {
+    t.S.trades = [{ id: 'o', pos: 'IE0000000002', date: '2026-03-10', type: 'open', qty: 3, price: null, fees: 0, taxes: 0 },
+      { id: 'p', pos: 'IE0000000002', date: '2026-03-20', type: 'buy', qty: 1, price: 40, fees: 0, taxes: 0, ref: 'aa11-bb22' }];
+    const base = { ok: true, isin: 'IE0000000002', type: 'buy', qty: 1, price: 40, amount: 40 };
+    return t.tradeStatus({ ...base, date: '2026-03-09', ref: 'zz99-yy88' }).key === 'before'
+      && t.tradeStatus({ ...base, date: '2026-03-20', ref: 'aa11-bb22' }).key === 'dup'
+      && t.tradeStatus({ ...base, date: '2026-03-25', ref: 'cc33-dd44' }).key === 'new';
+  }],
+  ['le quantità del titolo seguono le operazioni', t => {
+    t.S.positions = [{ id: 'X', isin: 'X', name: 'X', kind: 'etf', qty: 99, avg: 1 }];
+    t.S.trades = [{ id: 'a', pos: 'X', date: '2026-01-01', type: 'open', qty: 2, price: 50, fees: 0, taxes: 0 },
+      { id: 'b', pos: 'X', date: '2026-02-01', type: 'buy', qty: 2, price: 70, fees: 0, taxes: 0 }];
+    t.syncPositions();
+    return t.S.positions[0].qty === 4 && t.S.positions[0].avg === 60;
+  }],
 ];
 
 let failed = 0;

@@ -177,7 +177,7 @@ body{padding-bottom:env(safe-area-inset-bottom,0px);padding-left:env(safe-area-i
 <dialog id="ask"></dialog>
 <datalist id="accList"></datalist>
 <input type="file" id="jsonIn" accept=".json,application/json" hidden>
-<input type="file" id="invFile" accept=".pdf,application/pdf" hidden>
+<input type="file" id="invFile" accept=".pdf,application/pdf" multiple hidden>
 <div class="toast" id="toast"></div>
 <div class="tip" id="tip"></div>
 <script src="vendor/supabase.js"></script>
@@ -229,7 +229,7 @@ const DEFAULT_CATS=[
 ];
 const defaultCats=()=>DEFAULT_CATS.map(([name,kind,color,keywords],i)=>({id:'k'+i,name,kind,color,keywords}));
 function defaultState(){
-  return {v:1,catVer:2,categories:defaultCats(),movements:[],recurring:[],learn:{},imports:[],holders:{},jars:[],positions:[]};
+  return {v:1,catVer:2,categories:defaultCats(),movements:[],recurring:[],learn:{},imports:[],holders:{},jars:[],positions:[],trades:[]};
 }
 function normalize(d){
   const s=Object.assign(defaultState(),d||{});
@@ -238,6 +238,7 @@ function normalize(d){
   if(!s.holders||typeof s.holders!=='object') s.holders={};
   if(!Array.isArray(s.jars)) s.jars=[];
   if(!Array.isArray(s.positions)) s.positions=[];
+  if(!Array.isArray(s.trades)) s.trades=[];
   s.recurring.forEach(r=>{if(!Array.isArray(r.skip)) r.skip=[]});
   if((s.catVer||1)<2){ // aggiunge le nuove parole chiave e categorie predefinite ai dati già salvati
     DEFAULT_CATS.forEach(([name,kind,color,kw],i)=>{
@@ -258,15 +259,16 @@ let rev=0;
    Leggono e scrivono solo gli account con l'email nella tabella members (regole nel database). */
 const CFG=window.SPESE_CONFIG||{};
 const DB={sb:null,user:null,state:'loading',ready:false,ro:false,pending:0,dirty:false,needReload:false,err:'',
-  remote:null,base:{mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),cats:'',learn:'{}',holders:'{}',jars:'[]'},q:Promise.resolve()};
-function resetRemote(){DB.remote={mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),mkt:new Map(),cats:null,learn:null,holders:null,jars:null}}
+  remote:null,base:{mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),trd:new Map(),cats:'',learn:'{}',holders:'{}',jars:'[]'},q:Promise.resolve()};
+function resetRemote(){DB.remote={mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),trd:new Map(),mkt:new Map(),cats:null,learn:null,holders:null,jars:null}}
 resetRemote();
 const normMov=m=>({id:m.id,date:m.date,desc:m.desc||'',amount:round2(+m.amount||0),type:m.type==='entrata'?'entrata':'uscita',cat:m.cat||'',account:m.account||'',note:m.note||'',recId:m.recId||'',occ:m.occ||'',imp:m.imp||'',mese:m.mese||''});
 const normPos=p=>({id:p.id,isin:p.isin||'',name:p.name||'',kind:p.kind||'azione',qty:+p.qty||0,avg:p.avg==null||p.avg===''?null:+p.avg,refPrice:p.refPrice==null?null:+p.refPrice,refDate:p.refDate||'',newsQuery:p.newsQuery||'',cgId:p.cgId||'',broker:p.broker||'',archived:!!p.archived});
+const normTrade=t=>({id:t.id,pos:t.pos||'',date:t.date||'',type:t.type||'buy',qty:+t.qty||0,price:t.price==null||t.price===''?null:+t.price,amount:t.amount==null||t.amount===''?null:+t.amount,fees:+t.fees||0,taxes:+t.taxes||0,src:t.src||'',ref:t.ref||'',note:t.note||''});
 const normRec=r=>({id:r.id,name:r.name||'',type:r.type==='entrata'?'entrata':'uscita',amount:round2(+r.amount||0),freq:r.freq||'m',start:r.start||'',end:r.end||'',cat:r.cat||'',account:r.account||'',paused:!!r.paused,skip:Array.isArray(r.skip)?[...r.skip]:[]});
 function setRemote(kind,id,data){
   const R=DB.remote;
-  if(kind==='mov'||kind==='rec'||kind==='imp'||kind==='inv'||kind==='mkt'){if(data) R[kind].set(id,{...data,id});else R[kind].delete(id);return}
+  if(kind==='mov'||kind==='rec'||kind==='imp'||kind==='inv'||kind==='trd'||kind==='mkt'){if(data) R[kind].set(id,{...data,id});else R[kind].delete(id);return}
   if(kind!=='cfg') return;
   if(id==='categories') R.cats=data||null;
   else if(id==='learn') R.learn=data?{...(data.map||{})}:null;
@@ -283,6 +285,7 @@ function applyRemote(){
   S.holders={...(R.holders||{})};B.holders=JSON.stringify(S.holders);
   S.jars=(R.jars||[]).map(j=>({...j}));B.jars=JSON.stringify(S.jars);
   S.positions=[...R.inv.values()].map(normPos);B.inv=new Map(S.positions.map(p=>[p.id,JSON.stringify(p)]));
+  S.trades=[...R.trd.values()].map(normTrade);B.trd=new Map(S.trades.map(t=>[t.id,JSON.stringify(t)]));
   rev++;cacheSoon();
 }
 function persist(){ // confronta con l'ultima versione salvata e manda solo quello che è cambiato
@@ -290,7 +293,7 @@ function persist(){ // confronta con l'ultima versione salvata e manda solo quel
   const sync=(kind,list,norm)=>{const seen=new Set();
     for(const x of list){const o=norm(x),j=JSON.stringify(o);seen.add(o.id);if(B[kind].get(o.id)!==j){B[kind].set(o.id,j);R[kind].set(o.id,o);ups.push({kind,id:o.id,data:o})}}
     for(const id of [...B[kind].keys()]) if(!seen.has(id)){B[kind].delete(id);R[kind].delete(id);dels.push([kind,id])}};
-  sync('mov',S.movements,normMov);sync('rec',S.recurring,normRec);sync('imp',S.imports,x=>({...x}));sync('inv',S.positions||[],normPos);
+  sync('mov',S.movements,normMov);sync('rec',S.recurring,normRec);sync('imp',S.imports,x=>({...x}));sync('inv',S.positions||[],normPos);sync('trd',S.trades||[],normTrade);
   const cfg=(key,id,val,wrap)=>{const j=JSON.stringify(val);if(j!==B[key]){B[key]=j;const data=wrap(JSON.parse(j));setRemote('cfg',id,data);ups.push({kind:'cfg',id,data})}};
   cfg('cats','categories',S.categories,list=>({list,catVer:2}));
   cfg('learn','learn',S.learn||{},map=>({map}));
@@ -357,12 +360,12 @@ let cT;function cacheSoon(){if(!hasIdb()) return;clearTimeout(cT);cT=setTimeout(
 async function saveCache(){
   if(!DB.user||DB.state!=='ok') return;
   const R=DB.remote;
-  try{await idb.set('cache',{user:DB.user.email,at:Date.now(),R:{mov:[...R.mov.values()],rec:[...R.rec.values()],imp:[...R.imp.values()],inv:[...R.inv.values()],mkt:[...R.mkt.values()],cats:R.cats,learn:R.learn,holders:R.holders,jars:R.jars}})}catch(e){console.warn(e)}
+  try{await idb.set('cache',{user:DB.user.email,at:Date.now(),R:{mov:[...R.mov.values()],rec:[...R.rec.values()],imp:[...R.imp.values()],inv:[...R.inv.values()],trd:[...R.trd.values()],mkt:[...R.mkt.values()],cats:R.cats,learn:R.learn,holders:R.holders,jars:R.jars}})}catch(e){console.warn(e)}
 }
 async function loadCache(email){
   if(!hasIdb()) return false;
   try{const c=await idb.get('cache');if(!c||c.user!==email) return false;
-    resetRemote();const R=DB.remote;c.R.mov.forEach(m=>R.mov.set(m.id,m));c.R.rec.forEach(r=>R.rec.set(r.id,r));c.R.imp.forEach(i=>R.imp.set(i.id,i));(c.R.inv||[]).forEach(p=>R.inv.set(p.id,p));(c.R.mkt||[]).forEach(m=>R.mkt.set(m.id,m));
+    resetRemote();const R=DB.remote;c.R.mov.forEach(m=>R.mov.set(m.id,m));c.R.rec.forEach(r=>R.rec.set(r.id,r));c.R.imp.forEach(i=>R.imp.set(i.id,i));(c.R.inv||[]).forEach(p=>R.inv.set(p.id,p));(c.R.trd||[]).forEach(t=>R.trd.set(t.id,t));(c.R.mkt||[]).forEach(m=>R.mkt.set(m.id,m));
     R.cats=c.R.cats;R.learn=c.R.learn;R.holders=c.R.holders;R.jars=c.R.jars;DB.cacheAt=c.at;return true}catch{return false}
 }
 /* accesso */
@@ -425,7 +428,7 @@ document.addEventListener('submit',async e=>{
     toast('Password aggiornata');history.replaceState(null,'',location.pathname);start(data.user);
   }
 });
-function exportState(){return {v:1,catVer:2,exported:new Date().toISOString(),categories:S.categories,movements:S.movements.map(normMov),recurring:S.recurring.map(normRec),learn:S.learn,imports:S.imports,holders:S.holders,jars:S.jars,positions:(S.positions||[]).map(normPos)}}
+function exportState(){return {v:1,catVer:2,exported:new Date().toISOString(),categories:S.categories,movements:S.movements.map(normMov),recurring:S.recurring.map(normRec),learn:S.learn,imports:S.imports,holders:S.holders,jars:S.jars,positions:(S.positions||[]).map(normPos),trades:(S.trades||[]).map(normTrade)}}
 function saveFile(filename,data){
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([data],{type:filename.endsWith('.csv')?'text/csv;charset=utf-8':'application/json'}));
@@ -957,6 +960,23 @@ function openJar(id){
 const INV_KIND={azione:'Azione',etf:'ETF / fondo',obbligazione:'Obbligazione / BTP',cripto:'Cripto'};
 const INV_COLOR={azione:'#2563eb',etf:'#0d9488',obbligazione:'#ca8a04',cripto:'#7c3aed'};
 const mkt=id=>(DB.remote.mkt&&DB.remote.mkt.get(id))||{};
+/* registro delle operazioni: quantità e prezzo medio si calcolano da qui (costo medio ponderato) */
+const TRD_TYPE={open:'Situazione iniziale',buy:'Acquisto',sell:'Vendita',div:'Dividendo'};
+const TRD_ORDER={open:0,buy:1,sell:2,div:3};
+const tradesOf=pos=>(S.trades||[]).filter(t=>t.pos===pos).sort((a,b)=>a.date.localeCompare(b.date)||TRD_ORDER[a.type]-TRD_ORDER[b.type]);
+function posStats(pos){
+  let qty=0,cost=0,known=true,realized=0,divs=0,fees=0;const ts=tradesOf(pos);
+  for(const t of ts){
+    if(t.type==='open'||t.type==='buy'){qty+=t.qty;fees+=t.fees||0;if(t.price==null) known=false;else cost+=t.qty*t.price+(t.fees||0)}
+    else if(t.type==='sell'){const out=Math.min(t.qty,qty),avg=qty?cost/qty:0;if(known&&t.price!=null) realized+=out*t.price-(t.fees||0)-(t.taxes||0)-out*avg;cost-=out*avg;qty-=out;fees+=t.fees||0}
+    else if(t.type==='div') divs+=(t.amount||0)-(t.taxes||0);
+  }
+  qty=Math.round(qty*1e6)/1e6;if(qty<=0){qty=0;cost=0}
+  return {qty,avg:known&&qty>0?Math.round(cost/qty*1e4)/1e4:null,cost:known?round2(cost):null,realized:known?round2(realized):null,divs:round2(divs),fees:round2(fees),n:ts.length,open:ts.find(t=>t.type==='open')||null};
+}
+function syncPositions(){ // riporta su ogni titolo quantità e prezzo medio calcolati dalle operazioni
+  S.positions=(S.positions||[]).map(p=>{if(!tradesOf(p.id).length) return p;const st=posStats(p.id);return {...p,qty:st.qty,avg:st.avg}});
+}
 function invRows(){
   return (S.positions||[]).filter(p=>!p.archived&&p.qty>0).map(p=>{
     const m=mkt(p.id),price=m.price??p.refPrice??null,value=price!=null?round2(p.qty*price):null,cost=p.avg!=null?round2(p.qty*p.avg):null;
@@ -967,7 +987,8 @@ function invRows(){
 function invTotals(){
   const r=invRows(),withCost=r.filter(x=>x.pl!=null);
   const value=round2(r.reduce((a,x)=>a+(x.value||0),0)),cost=round2(withCost.reduce((a,x)=>a+x.cost,0));
-  return {n:r.length,value,cost,pl:withCost.length?round2(withCost.reduce((a,x)=>a+x.pl,0)):null,day:round2(r.reduce((a,x)=>a+(x.day||0),0)),missingAvg:r.length-withCost.length};
+  let realized=0,divs=0;for(const p of S.positions||[]){const st=posStats(p.id);realized+=st.realized||0;divs+=st.divs}
+  return {n:r.length,value,cost,pl:withCost.length?round2(withCost.reduce((a,x)=>a+x.pl,0)):null,day:round2(r.reduce((a,x)=>a+(x.day||0),0)),missingAvg:r.length-withCost.length,realized:round2(realized),divs:round2(divs)};
 }
 const pct=v=>(v>=0?'+':'')+v.toLocaleString('it-IT',{maximumFractionDigits:2,minimumFractionDigits:2})+'%';
 const qtyFmt=q=>q.toLocaleString('it-IT',{maximumFractionDigits:6});
@@ -975,11 +996,11 @@ function viewInv(){
   const rows=invRows(),t=invTotals(),st=mkt('_stato');
   let h=`<div class="stack">${demoBanner()}
   <div class="row between"><div class="small muted">${st.at?`Prezzi e notizie aggiornati il ${new Date(st.at).toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'})}`:'Prezzi e notizie non ancora aggiornati'}</div>
-    <div class="row"><button class="btn" data-act="invimp">Importa estratto Trade Republic</button><button class="btn" data-act="posnew">+ Titolo</button><button class="btn primary" data-act="invupd">Aggiorna ora</button></div></div>`;
+    <div class="row"><button class="btn" data-act="invimp">Importa PDF Trade Republic</button><button class="btn" data-act="trdnew">+ Operazione</button><button class="btn" data-act="posnew">+ Titolo</button><button class="btn primary" data-act="invupd">Aggiorna ora</button></div></div>`;
   if(!rows.length) return h+`<div class="card empty">Nessun titolo. Importa l'<b>Estratto del patrimonio</b> di Trade Republic (PDF) oppure aggiungi un titolo a mano.<br><br><button class="btn primary" data-act="invimp">Importa estratto Trade Republic</button></div></div>`;
   h+=`<div class="grid kpis">${kpi('Valore attuale',eur(t.value),`${t.n} titoli`)}
     ${kpi('Investito',t.cost?eur(t.cost):'—',t.missingAvg?`manca il prezzo medio di ${t.missingAvg} ${t.missingAvg===1?'titolo':'titoli'}`:'somma dei prezzi medi di acquisto')}
-    ${kpi('Guadagno / perdita',t.pl!=null?`${t.pl>=0?'+':''}${eur(t.pl)}`:'—',t.pl!=null&&t.cost?pct(t.pl/t.cost*100)+(t.missingAvg?' (sui titoli con prezzo medio)':''):'inserisci i prezzi medi di acquisto',t.pl==null?'':t.pl>=0?'pos':'neg')}
+    ${kpi('Guadagno / perdita',t.pl!=null?`${t.pl>=0?'+':''}${eur(t.pl)}`:'—',(t.pl!=null&&t.cost?pct(t.pl/t.cost*100)+(t.missingAvg?' (sui titoli con prezzo medio)':''):'inserisci i prezzi medi di acquisto')+(t.realized||t.divs?`<br>realizzato ${eur(t.realized)} · dividendi ${eur(t.divs)}`:''),t.pl==null?'':t.pl>=0?'pos':'neg')}
     ${kpi('Oggi',`${t.day>=0?'+':''}${eur(t.day)}`,'variazione dalla chiusura precedente',t.day>=0?'pos':'neg')}</div>`;
   // ripartizione per tipo
   const byKind={};rows.forEach(x=>byKind[x.p.kind]=(byKind[x.p.kind]||0)+(x.value||0));
@@ -995,6 +1016,16 @@ function viewInv(){
     <td class="num">${x.pl!=null?`<span class="${x.pl>=0?'pos':'neg'}">${x.pl>=0?'+':''}${eur(x.pl)}<div class="small">${pct(x.plPct)}</div></span>`:'—'}</td>
     <td class="num muted">${x.value!=null&&t.value?Math.round(x.value/t.value*100)+'%':''}</td></tr>`).join('')}</tbody></table></div></div>`;
   h+=`<div class="card"><h2>Andamento del portafoglio</h2><div id="invChart"></div><p class="small muted" style="margin:6px 0 0">Valore calcolato con le quantità di oggi sui prezzi di chiusura salvati. Lo storico cresce giorno per giorno da quando l'aggiornamento automatico è attivo.</p></div>`;
+  // operazioni
+  const name=id=>(S.positions||[]).find(p=>p.id===id)?.name||id;
+  const ops=[...(S.trades||[])].sort((a,b)=>b.date.localeCompare(a.date)||TRD_ORDER[b.type]-TRD_ORDER[a.type]).slice(0,40);
+  h+=`<div class="card"><div class="row between" style="margin-bottom:8px"><h2 style="margin:0">Operazioni</h2><button class="btn sm" data-act="trdnew">+ Operazione</button></div>
+  ${ops.length?`<div class="tblwrap"><table class="small"><thead><tr><th>Data</th><th>Tipo</th><th>Titolo</th><th class="num">Quantità</th><th class="num">Prezzo</th><th class="num">Importo</th></tr></thead><tbody>
+  ${ops.map(t=>`<tr class="clk" data-act="trdedit" data-id="${esc(t.id)}"><td class="nowrap">${fmtDate(t.date)}</td><td><span class="chip">${TRD_TYPE[t.type]}</span></td><td>${esc(name(t.pos))}</td>
+    <td class="num">${t.type==='div'?'':qtyFmt(t.qty)}</td><td class="num">${t.price!=null?eur(t.price):t.type==='open'?'<span class="muted">da inserire</span>':''}</td>
+    <td class="num">${t.type==='div'?eur(t.amount||0):t.price!=null?eur(t.qty*t.price):''}${t.fees?`<div class="muted">comm. ${eur(t.fees)}</div>`:''}</td></tr>`).join('')}</tbody></table></div>
+  <p class="small muted" style="margin:8px 0 0">Quantità e prezzo medio di ogni titolo si calcolano da queste operazioni. Per aggiungerne una importa la conferma d'esecuzione di Trade Republic oppure usa <i>+ Operazione</i>.</p>`
+  :`<div class="empty">Nessuna operazione registrata.</div>`}</div>`;
   // notizie
   const news=rows.flatMap(x=>(x.m.news||[]).map(n=>({...n,who:x.p.name}))).filter(n=>n.title).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
   const seen=new Set(),uniq=news.filter(n=>{const k=n.title.toLowerCase();if(seen.has(k)) return false;seen.add(k);return true}).slice(0,30);
@@ -1057,56 +1088,147 @@ async function pdfTextLines(file){
   }
   return lines.map(l=>l.items.sort((a,b)=>a.x-b.x).map(i=>i.s).join(' ').replace(/\s+/g,' ').trim());
 }
-async function importTR(file){
-  let r;try{r=parseTRHoldings(await pdfTextLines(file))}catch(e){return notice('Non sono riuscito a leggere il PDF: '+e.message,'File non letto')}
-  if(!r.positions.length) return notice("Nel PDF non ho trovato titoli. Serve l'«Estratto del patrimonio» di Trade Republic (Profilo → Attività → Documenti).",'Nessun titolo trovato');
+/* conferma d'esecuzione di Trade Republic: acquisto, piano d'accumulo, vendita, dividendo */
+function parseTRTrade(lines){
+  const t=lines.join('\n');let m;
+  const r={type:'',date:'',ref:'',isin:'',name:'',qty:null,price:null,amount:null,fees:0,taxes:0,total:null};
+  if((m=t.match(/\b(?:ESECUZIONE|ORDINE|OPERAZIONE)\s+([0-9a-f]{4}-[0-9a-f]{4})/i))) r.ref=m[1];
+  if((m=t.match(/(?:esecuzione|eseguit\w*|pagamento|distribuzione)[^\n]*?\bil (\d{2})\.(\d{2})\.(\d{4})/i))||(m=t.match(/\bDATA\s+(\d{2})\.(\d{2})\.(\d{4})/))) r.date=`${m[3]}-${m[2]}-${m[1]}`;
+  // il tipo si legge dal contenuto, non dal piè di pagina legale ("…esente da imposte sulle vendite…")
+  const core=lines.filter(l=>!/UStG|\bIVA\b|imposte sulle vendite|creato automaticamente|registro commerciale|direttore generale/i.test(l)).join('\n');
+  r.type=/dividend|distribuzion|cedol|provent/i.test(core)?'div':/\bvendita\b|ordine di vendita|\bsell\b/i.test(core)?'sell':/acquist|piano d.accumulo|piano di accumulo|\bbuy\b|risparmio/i.test(core)?'buy':'';
+  for(const l of lines){if((m=l.match(/^(.+?)\s+([\d.]+(?:,\d+)?)\s+Pz\.?\s+([\d.]+,\d+)\s+EUR\s+(-?[\d.]+,\d+)\s+EUR$/i))){r.name=m[1].trim();r.qty=parseNum(m[2]);r.price=parseNum(m[3]);r.amount=Math.abs(parseNum(m[4]));break}}
+  if((m=t.match(/ISIN:\s*([A-Z]{2}[A-Z0-9]{9}\d)/))) r.isin=m[1];
+  for(const l of core.split('\n')){if((m=l.match(/commission\w*[^\d\n-]*(-?[\d.]+,\d{2})\s*EUR/i))) r.fees+=Math.abs(parseNum(m[1]));
+    else if((m=l.match(/\b(?:imposta|ritenuta|tass[ae]|tax)\b[^\d\n-]*(-?[\d.]+,\d{2})\s*EUR/i))&&!/bollo/i.test(l)) r.taxes+=Math.abs(parseNum(m[1]))}
+  if((m=t.match(/\bTOTALE\s+(-?[\d.]+,\d{2})\s*EUR/))) r.total=Math.abs(parseNum(m[1]));
+  r.fees=round2(r.fees);r.taxes=round2(r.taxes);
+  const net=r.type==='buy'?r.amount+r.fees:r.type==='sell'?r.amount-r.fees-r.taxes:r.amount-r.taxes;
+  r.ok=!!(r.type&&r.date&&r.isin&&r.qty&&r.price!=null&&r.amount!=null)&&(r.type==='div'||Math.abs(r.qty*r.price-r.amount)<=Math.max(0.05,r.amount*0.002))&&(r.total==null||Math.abs(net-r.total)<0.02);
+  return r;
+}
+/* che cosa succede a un'operazione importata: nuova, già presente o già compresa nella situazione iniziale */
+function tradeStatus(x){
+  if(!x.ok) return {key:'bad',label:'⚠ non riconosciuta: inseriscila a mano'};
+  if(x.ref&&(S.trades||[]).some(t=>t.ref===x.ref)) return {key:'dup',label:'già importata'};
+  const open=(S.trades||[]).find(t=>t.pos===x.isin&&t.type==='open');
+  if(open&&x.date<=open.date) return {key:'before',label:`già compresa nella situazione al ${fmtDate(open.date)}`};
+  return {key:'new',label:'nuova'};
+}
+async function importTRFiles(files){
+  const trades=[];
+  for(const f of files){
+    let lines;try{lines=await pdfTextLines(f)}catch(e){await notice(`Non sono riuscito a leggere ${f.name}: ${e.message}`,'File non letto');continue}
+    if(lines.some(l=>/ESTRATTO DEL PATRIMONIO/i.test(l))){await importHoldings(parseTRHoldings(lines));continue}
+    trades.push({...parseTRTrade(lines),file:f.name});
+  }
+  if(!trades.length) return;
+  const rows=trades.map(x=>({x,st:tradeStatus(x)}));
+  const f=openDlg(`<form><div class="dlg-h"><h3>Operazioni da importare</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  <div style="padding:12px 16px;display:grid;gap:10px"><div class="tblwrap"><table class="small"><thead><tr><th></th><th>Data</th><th>Operazione</th><th class="num">Quantità</th><th class="num">Prezzo</th><th class="num">Totale</th><th>Stato</th></tr></thead><tbody>
+  ${rows.map(({x,st},i)=>`<tr><td><input type="checkbox" name="t${i}" ${st.key==='new'?'checked':''} ${st.key==='bad'?'disabled':''}></td><td class="nowrap">${x.date?fmtDate(x.date):'—'}</td>
+    <td><b>${TRD_TYPE[x.type]||'?'}</b> ${esc(x.name||x.file)}<div class="muted">${esc(x.isin)}${x.ref?' · '+esc(x.ref):''}</div></td>
+    <td class="num">${x.qty!=null?qtyFmt(x.qty):''}</td><td class="num">${x.price!=null?eur(x.price):''}</td>
+    <td class="num">${x.total!=null?eur(x.total):x.amount!=null?eur(x.amount):''}${x.fees?`<div class="muted">comm. ${eur(x.fees)}</div>`:''}${x.taxes?`<div class="muted">tasse ${eur(x.taxes)}</div>`:''}</td>
+    <td class="${st.key==='new'?'pos':st.key==='bad'?'neg':'muted'}">${esc(st.label)}</td></tr>`).join('')}</tbody></table></div>
+  <p class="small muted" style="margin:0">Le operazioni con data uguale o precedente alla situazione iniziale di quel titolo sono già comprese nelle quantità e restano escluse, salvo che le spunti tu.</p></div>
+  <div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Registra le operazioni</button></div></form>`,
+  fd=>{
+    let n=0;S.trades=[...(S.trades||[])];S.positions=[...(S.positions||[])];
+    rows.forEach(({x},i)=>{if(!fd.get('t'+i)) return;
+      if(!S.positions.some(p=>p.id===x.isin)){const kind=guessKind(x.name);S.positions.push({id:x.isin,isin:x.isin,name:x.name,kind,qty:0,avg:null,refPrice:x.price,refDate:x.date,broker:'Trade Republic',newsQuery:defaultNewsQuery(x.name,kind),archived:false})}
+      S.trades.push({id:uid(),pos:x.isin,date:x.date,type:x.type,qty:x.qty,price:x.type==='div'?null:x.price,amount:x.amount,fees:x.fees,taxes:x.taxes,src:'Trade Republic',ref:x.ref||''});n++});
+    if(!n){toast('Nessuna operazione selezionata');return false}
+    syncPositions();save();toast(`Registrate ${n} operazioni`);setTimeout(()=>refreshMarket(false),300);
+  });
+}
+async function importHoldings(r){
+  if(!r.positions.length) return notice("Nel PDF non ho trovato titoli. Serve l'«Estratto del patrimonio» di Trade Republic.",'Nessun titolo trovato');
   const cur=new Map((S.positions||[]).map(p=>[p.id,p]));
-  const lines=r.positions.map(x=>{const o=cur.get(x.isin);return {...x,status:!o||o.archived||!o.qty?'nuovo':Math.abs(o.qty-x.qty)>1e-9?`quantità ${qtyFmt(o.qty)} → ${qtyFmt(x.qty)}`:'invariato'}});
+  const lines=r.positions.map(x=>{const o=cur.get(x.isin),hasOps=tradesOf(x.isin).length>0,st=hasOps?posStats(x.isin):null;
+    return {...x,hasOps,status:!hasOps?`situazione iniziale al ${fmtDate(r.date)}`:Math.abs(st.qty-x.qty)<1e-6?'✔ coincide con le operazioni':`⚠ le operazioni danno ${qtyFmt(st.qty)}, l'estratto ${qtyFmt(x.qty)}: manca un'operazione?`,warn:hasOps&&Math.abs(st.qty-x.qty)>=1e-6}});
   const gone=(S.positions||[]).filter(p=>!p.archived&&p.qty>0&&p.broker==='Trade Republic'&&!r.positions.some(x=>x.isin===p.id));
   const ok=r.total==null||Math.abs(r.total-r.sum)<0.02;
-  openDlg(`<form><div class="dlg-h"><h3>Estratto del patrimonio${r.date?' al '+fmtDate(r.date):''}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  return new Promise(res=>{openDlg(`<form><div class="dlg-h"><h3>Estratto del patrimonio${r.date?' al '+fmtDate(r.date):''}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
   <div style="padding:12px 16px;display:grid;gap:10px">
     <div class="banner ${ok?'ok':''}"><div>${ok?`✔ I conti tornano: ${r.positions.length} titoli per ${eur(r.sum)}, come il totale del documento.`:`⚠ La somma dei titoli letti (${eur(r.sum)}) non coincide con il totale del documento (${eur(r.total)}): controlla prima di confermare.`}</div></div>
-    <div class="tblwrap"><table class="small"><thead><tr><th>Titolo</th><th class="num">Quantità</th><th class="num">Valore</th><th>Cosa cambia</th></tr></thead><tbody>
-    ${lines.map(x=>`<tr><td>${esc(x.name)}<div class="muted">${x.isin}</div></td><td class="num">${qtyFmt(x.qty)}</td><td class="num">${eur(x.value)}</td><td>${esc(x.status)}</td></tr>`).join('')}
-    ${gone.map(p=>`<tr><td>${esc(p.name)}<div class="muted">${esc(p.isin)}</div></td><td class="num">0</td><td></td><td class="neg">non più presente</td></tr>`).join('')}</tbody></table></div>
-    <p class="small muted" style="margin:0">Le quantità prendono quelle dell'estratto. Prezzo medio di acquisto e ricerca delle notizie che avete già inserito restano come sono.</p>
-  </div><div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Aggiorna il portafoglio</button></div></form>`,
+    <div class="tblwrap"><table class="small"><thead><tr><th>Titolo</th><th class="num">Quantità</th><th class="num">Valore</th><th>Confronto</th></tr></thead><tbody>
+    ${lines.map(x=>`<tr><td>${esc(x.name)}<div class="muted">${x.isin}</div></td><td class="num">${qtyFmt(x.qty)}</td><td class="num">${eur(x.value)}</td><td class="${x.warn?'neg':''}">${esc(x.status)}</td></tr>`).join('')}
+    ${gone.map(p=>`<tr><td>${esc(p.name)}<div class="muted">${esc(p.isin)}</div></td><td class="num">0</td><td></td><td class="neg">⚠ non più presente: registra la vendita</td></tr>`).join('')}</tbody></table></div>
+    <p class="small muted" style="margin:0">I titoli che hanno già delle operazioni non vengono modificati: l'estratto serve da controllo. Per quelli nuovi registro la situazione iniziale con la quantità dell'estratto; il prezzo medio lo inserisci tu dalla scheda del titolo.</p>
+  </div><div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Conferma</button></div></form>`,
   ()=>{
-    S.positions=[...(S.positions||[])];
-    for(const x of r.positions){const i=S.positions.findIndex(p=>p.id===x.isin),o=i>=0?S.positions[i]:null,kind=o?.kind||guessKind(x.name);
-      const np={...(o||{}),id:x.isin,isin:x.isin,name:o?.name||x.name,kind,qty:x.qty,refPrice:x.price,refDate:r.date,broker:'Trade Republic',archived:false,newsQuery:o?.newsQuery||defaultNewsQuery(x.name,kind),avg:o?.avg??null};
-      if(i>=0) S.positions[i]=np;else S.positions.push(np)}
-    for(const p of gone){const i=S.positions.findIndex(q=>q.id===p.id);S.positions[i]={...S.positions[i],qty:0}}
-    save();toast('Portafoglio aggiornato');setTimeout(()=>refreshMarket(false),300);
-  });
+    S.positions=[...(S.positions||[])];S.trades=[...(S.trades||[])];
+    for(const x of lines){const i=S.positions.findIndex(p=>p.id===x.isin),o=i>=0?S.positions[i]:null,kind=o?.kind||guessKind(x.name);
+      const np={...(o||{}),id:x.isin,isin:x.isin,name:o?.name||x.name,kind,qty:o?.qty||0,avg:o?.avg??null,refPrice:x.price,refDate:r.date,broker:'Trade Republic',archived:false,newsQuery:o?.newsQuery||defaultNewsQuery(x.name,kind)};
+      if(i>=0) S.positions[i]=np;else S.positions.push(np);
+      if(!x.hasOps) S.trades.push({id:uid(),pos:x.isin,date:r.date,type:'open',qty:x.qty,price:o?.avg??null,amount:null,fees:0,taxes:0,src:'Estratto del patrimonio',ref:''});
+    }
+    syncPositions();save();toast('Portafoglio aggiornato');setTimeout(()=>refreshMarket(false),300);
+  });dlg.addEventListener('close',()=>res(),{once:true})});
 }
 function openPos(id){
   const p=id?(S.positions||[]).find(x=>x.id===id):{id:'',isin:'',name:'',kind:'azione',qty:'',avg:null,newsQuery:'',cgId:''};if(!p) return;
-  const m=mkt(p.id),hist=Object.entries(m.history||{}).sort().slice(-5).reverse();
-  const f=openDlg(`<form><div class="dlg-h"><h3>${id?esc(p.name):'Nuovo titolo'}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  const m=mkt(p.id),hist=Object.entries(m.history||{}).sort().slice(-5).reverse(),st=id?posStats(id):null,ops=id?tradesOf(id):[];
+  const fromOps=!!(st&&st.n);
+  openDlg(`<form><div class="dlg-h"><h3>${id?esc(p.name):'Nuovo titolo'}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
   <div class="form">
     <label class="full">Nome<input id="psName" name="name" required value="${esc(p.name)}"></label>
     <label>ISIN${id?'':' (es. IE00B4L5Y983)'}<input id="psIsin" name="isin" value="${esc(p.isin)}" ${id?'readonly':''} placeholder="12 caratteri"></label>
     <label>Tipo<select id="psKind" name="kind">${Object.entries(INV_KIND).map(([k,l])=>`<option value="${k}" ${p.kind===k?'selected':''}>${l}</option>`).join('')}</select></label>
-    <label>Quantità<input id="psQty" name="qty" inputmode="decimal" required value="${esc(p.qty===''?'':String(p.qty).replace('.',','))}"></label>
-    <label>Prezzo medio di acquisto (€)<input id="psAvg" name="avg" inputmode="decimal" value="${p.avg==null?'':String(p.avg).replace('.',',')}" placeholder="dall'app del broker"></label>
+    ${fromOps?`<div class="full small" style="display:grid;gap:2px"><div>Quantità <b>${qtyFmt(st.qty)}</b> · prezzo medio <b>${st.avg!=null?eur(st.avg):'—'}</b> <span class="muted">(calcolati da ${st.n} operazioni)</span></div>
+        ${st.realized||st.divs?`<div>Guadagno realizzato <b>${eur(st.realized||0)}</b> · dividendi <b>${eur(st.divs)}</b></div>`:''}</div>
+      ${st.open?`<label class="full">Prezzo medio di acquisto al ${fmtDate(st.open.date)} (€)<input id="psAvg" name="avg" inputmode="decimal" value="${st.open.price==null?'':String(st.open.price).replace('.',',')}" placeholder="dall'app Trade Republic, pagina del titolo"></label>`:''}`
+    :`<label>Quantità posseduta<input id="psQty" name="qty" inputmode="decimal" required value=""></label>
+      <label>Prezzo medio di acquisto (€)<input id="psAvg" name="avg" inputmode="decimal" value="" placeholder="facoltativo"></label>`}
     <label class="full">Ricerca per le notizie<input id="psNews" name="newsQuery" value="${esc(p.newsQuery)}" placeholder="es. NVIDIA azioni"></label>
     <label class="full">ID CoinGecko (solo cripto)<input id="psCg" name="cgId" value="${esc(p.cgId)}" placeholder="es. bitcoin"></label>
     ${id?`<div class="full small muted">${m.price!=null?`Ultimo prezzo ${eur(m.price)} (${esc(m.source||'')}, ${new Date(m.at).toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'})})`:'Prezzo non ancora aggiornato'}${m.err?` · <span class="neg">${esc(m.err)}</span>`:''}${hist.length?`<br>Chiusure: ${hist.map(([d,v])=>fmtShort(d)+' '+eur(v)).join(' · ')}`:''}</div>
+      ${ops.length?`<div class="full upc">${ops.slice().reverse().slice(0,6).map(t=>`<div class="u" style="grid-template-columns:70px 1fr auto"><span class="small muted">${fmtDate(t.date)}</span><span class="small">${TRD_TYPE[t.type]} ${t.type==='div'?eur(t.amount||0):qtyFmt(t.qty)+(t.price!=null?' a '+eur(t.price):'')}</span><button type="button" class="btn sm ghost" data-act="trdedit" data-id="${esc(t.id)}">✎</button></div>`).join('')}</div>`:''}
       ${(m.news||[]).length?`<div class="full upc">${m.news.slice(0,5).map(n=>`<div class="u" style="grid-template-columns:62px 1fr"><span class="small muted">${n.date?fmtShort(n.date.slice(0,10)):''}</span><a class="small" href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a></div>`).join('')}</div>`:''}`:''}
-  </div><div class="dlg-f">${id?`<button type="button" class="btn danger" data-act="posdel" data-id="${esc(id)}" style="margin-right:auto">Elimina</button>`:''}<button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
+  </div><div class="dlg-f">${id?`<button type="button" class="btn danger" data-act="posdel" data-id="${esc(id)}" style="margin-right:auto">Elimina</button><button type="button" class="btn" data-act="trdnew" data-pos="${esc(id)}">+ Operazione</button>`:''}<button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
   fd=>{
-    const qty=parseNum(fd.get('qty')),avgRaw=String(fd.get('avg')||'').trim(),avg=avgRaw?parseNum(avgRaw):null,kind=fd.get('kind');
-    const isin=String(fd.get('isin')||'').trim().toUpperCase(),cgId=String(fd.get('cgId')||'').trim().toLowerCase();
-    if(qty==null||qty<0){toast('Quantità non valida');return false}
+    const kind=fd.get('kind'),isin=String(fd.get('isin')||'').trim().toUpperCase(),cgId=String(fd.get('cgId')||'').trim().toLowerCase();
+    const avgRaw=String(fd.get('avg')||'').trim(),avg=avgRaw?parseNum(avgRaw):null;
     if(avgRaw&&(avg==null||avg<0)){toast('Prezzo medio non valido');return false}
     if(kind!=='cripto'&&!/^[A-Z]{2}[A-Z0-9]{9}\d$/.test(isin)){toast('ISIN non valido: sono 12 caratteri, es. IE00B4L5Y983');return false}
     if(kind==='cripto'&&!cgId){toast("Per le cripto serve l'ID CoinGecko");return false}
     const nid=id||(kind==='cripto'?'CRYPTO-'+cgId.toUpperCase():isin);
     if(!id&&(S.positions||[]).some(x=>x.id===nid&&!x.archived)){toast('Questo titolo è già in portafoglio');return false}
-    const name=fd.get('name').trim(),o={...p,id:nid,isin,name,kind,qty,avg,cgId,newsQuery:fd.get('newsQuery').trim()||defaultNewsQuery(name,kind),archived:false};
-    S.positions=[...(S.positions||[]).filter(x=>x.id!==nid),o];save();toast(id?'Titolo aggiornato':'Titolo aggiunto');if(!id) setTimeout(()=>refreshMarket(false),300);
+    const name=fd.get('name').trim();
+    S.positions=[...(S.positions||[]).filter(x=>x.id!==nid),{...p,id:nid,isin,name,kind,cgId,newsQuery:fd.get('newsQuery').trim()||defaultNewsQuery(name,kind),archived:false}];
+    S.trades=[...(S.trades||[])];
+    if(!fromOps){const qty=parseNum(fd.get('qty'));if(qty==null||qty<0){toast('Quantità non valida');return false}
+      S.trades.push({id:uid(),pos:nid,date:today(),type:'open',qty,price:avg,amount:null,fees:0,taxes:0,src:'manuale',ref:''})}
+    else if(st.open){const i=S.trades.findIndex(t=>t.id===st.open.id);S.trades[i]={...S.trades[i],price:avg}}
+    syncPositions();save();toast(id?'Titolo aggiornato':'Titolo aggiunto');if(!id) setTimeout(()=>refreshMarket(false),300);
+  });
+}
+function openTrade(id,preset={}){
+  const t=id?(S.trades||[]).find(x=>x.id===id):{id:'',pos:preset.pos||'',date:today(),type:'buy',qty:'',price:null,amount:null,fees:0,taxes:0,note:''};if(!t) return;
+  const pos=(S.positions||[]).filter(p=>!p.archived||p.id===t.pos).sort((a,b)=>a.name.localeCompare(b.name));
+  if(!pos.length) return notice('Prima aggiungi il titolo con «+ Titolo» oppure importa un PDF di Trade Republic.','Nessun titolo');
+  const n=v=>v==null||v===''?'':String(v).replace('.',',');
+  const f=openDlg(`<form><div class="dlg-h"><h3>${id?'Modifica operazione':'Nuova operazione'}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  <div class="form">
+    <label>Tipo<select id="trType" name="type">${Object.entries(TRD_TYPE).filter(([k])=>k!=='open'||t.type==='open').map(([k,l])=>`<option value="${k}" ${t.type===k?'selected':''}>${l}</option>`).join('')}</select></label>
+    <label>Data<input id="trDate" type="date" name="date" required value="${t.date}"></label>
+    <label class="full">Titolo<select id="trPos" name="pos">${pos.map(p=>`<option value="${esc(p.id)}" ${p.id===t.pos?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label>
+    <label>Quantità<input id="trQty" name="qty" inputmode="decimal" value="${n(t.qty)}"></label>
+    <label>Prezzo per quota (€)<input id="trPrice" name="price" inputmode="decimal" value="${n(t.price)}"></label>
+    <label>Commissioni (€)<input id="trFees" name="fees" inputmode="decimal" value="${n(t.fees||'')}" placeholder="0"></label>
+    <label>Tasse trattenute (€)<input id="trTaxes" name="taxes" inputmode="decimal" value="${n(t.taxes||'')}" placeholder="0"></label>
+    <label class="full">Importo lordo del dividendo (€)<input id="trAmount" name="amount" inputmode="decimal" value="${n(t.type==='div'?t.amount:'')}" placeholder="solo per i dividendi"></label>
+    <label class="full">Note<input id="trNote" name="note" value="${esc(t.note||'')}"></label>
+  </div><div class="dlg-f">${id?`<button type="button" class="btn danger" data-act="trddel" data-id="${esc(id)}" style="margin-right:auto">Elimina</button>`:''}<button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
+  fd=>{
+    const type=fd.get('type'),qty=parseNum(fd.get('qty')),price=String(fd.get('price')).trim()?parseNum(fd.get('price')):null,amount=parseNum(fd.get('amount'));
+    const o={...t,id:id||uid(),pos:fd.get('pos'),date:fd.get('date'),type,qty:qty||0,price,fees:Math.abs(parseNum(fd.get('fees'))||0),taxes:Math.abs(parseNum(fd.get('taxes'))||0),note:fd.get('note').trim(),src:t.src||'manuale'};
+    if(type==='div'){if(!amount){toast("Scrivi l'importo del dividendo");return false}o.amount=Math.abs(amount);o.price=null}
+    else{if(!qty||qty<=0){toast('Quantità non valida');return false}if(type!=='open'&&(price==null||price<0)){toast('Prezzo non valido');return false}o.amount=price!=null?round2(qty*price):null}
+    if(type==='sell'){const others=(S.trades||[]).filter(x=>x.id!==o.id);const saved=S.trades;S.trades=others;const have=posStats(o.pos).qty;S.trades=saved;
+      if(qty>have+1e-9){toast(`Puoi vendere al massimo ${qtyFmt(have)} quote`);return false}}
+    S.trades=[...(S.trades||[]).filter(x=>x.id!==o.id),o];syncPositions();save();toast(id?'Operazione aggiornata':'Operazione registrata');
   });
 }
 /* ============ RICORRENTI ============ */
@@ -1589,9 +1711,14 @@ const ACT={
   invupd:()=>refreshMarket(true),
   invimp:()=>$('#invFile').click(),
   posnew:()=>openPos(null),
+  trdnew:a=>{if(dlg.open) dlg.close();openTrade(null,{pos:a.dataset.pos||''})},
+  trdedit:a=>{if(dlg.open) dlg.close();openTrade(a.dataset.id)},
+  trddel:async a=>{const t=(S.trades||[]).find(x=>x.id===a.dataset.id);if(!t||!await ask(`Eliminare l'operazione del ${fmtDate(t.date)}?`,{title:'Elimina operazione',ok:'Elimina'})) return;
+    S.trades=S.trades.filter(x=>x!==t);syncPositions();if(dlg.open) dlg.close();save();toast('Operazione eliminata')},
   posedit:a=>openPos(a.dataset.id),
-  posdel:async a=>{const p=(S.positions||[]).find(x=>x.id===a.dataset.id);if(!p||!await ask(`Togliere “${p.name}” dal portafoglio?`,{title:'Elimina titolo',ok:'Elimina'})) return;
-    S.positions=S.positions.filter(x=>x!==p);if(dlg.open) dlg.close();save();toast('Titolo eliminato')},
+  posdel:async a=>{const p=(S.positions||[]).find(x=>x.id===a.dataset.id);if(!p) return;const n=tradesOf(p.id).length;
+    if(!await ask(`Togliere “${p.name}” dal portafoglio?${n?`\nVengono eliminate anche le sue ${n} operazioni.`:''}`,{title:'Elimina titolo',ok:'Elimina'})) return;
+    S.positions=S.positions.filter(x=>x!==p);S.trades=(S.trades||[]).filter(t=>t.pos!==p.id);if(dlg.open) dlg.close();save();toast('Titolo eliminato')},
   editjar:a=>openJar(a.dataset.id),
   jarput:a=>{const j=jarOf('jar:'+a.dataset.id);if(j) openMov(null,{type:'uscita',cat:'jar:'+j.id,desc:'Salvadanaio '+j.name,account:''})},
   jartake:a=>{const j=jarOf('jar:'+a.dataset.id);if(j) openMov(null,{type:'entrata',cat:'jar:'+j.id,desc:'Prelievo dal salvadanaio '+j.name,account:''})},
@@ -1625,7 +1752,7 @@ const ACT={
   expcsv:()=>exportCSV(),
   wipe:async()=>{if(!await ask('Eliminare DEFINITIVAMENTE tutti i movimenti, le ricorrenti, i salvadanai e le categorie personalizzate, per tutti gli account?\nTi consiglio di esportare un backup prima.',{title:'Elimina tutti i dati',ok:'Elimina tutto'})) return;
     if(DB.state!=='ok'||DB.ro) return toast('Non puoi eliminare i dati adesso');
-    const dels=[];for(const k of ['mov','rec','imp','inv']) for(const id of DB.remote[k].keys()) dels.push([k,id]);
+    const dels=[];for(const k of ['mov','rec','imp','inv','trd']) for(const id of DB.remote[k].keys()) dels.push([k,id]);
     for(const id of ['categories','learn','cards','jars']) dels.push(['cfg',id]);
     resetRemote();applyRemote();write([],dels);render();toast('Dati eliminati')},
   logout:()=>signOut(),
@@ -1661,11 +1788,11 @@ const CHG={
 };
 document.addEventListener('change',e=>{const a=e.target.closest('[data-chg]');if(a&&CHG[a.dataset.chg]) CHG[a.dataset.chg](a,e)});
 let qT;document.addEventListener('input',e=>{if(e.target.id==='q'){clearTimeout(qT);qT=setTimeout(()=>{V.f.q=e.target.value;V.limit=300;renderMovList()},150)}});
-$('#invFile').addEventListener('change',e=>{const f=e.target.files[0];e.target.value='';if(f) importTR(f)});
+$('#invFile').addEventListener('change',e=>{const fs=[...e.target.files];e.target.value='';if(fs.length) importTRFiles(fs)});
 $('#jsonIn').addEventListener('change',async e=>{const f=e.target.files[0];e.target.value='';if(!f) return;
   let d;try{d=JSON.parse(await f.text());if(!Array.isArray(d.movements)) throw 0}catch{return notice('Il file non è un archivio valido di Spese Mensili.','File non valido')}
   if(!await ask(`Il file contiene ${d.movements.length} movimenti e ${(d.recurring||[]).length} ricorrenti.\nSostituiscono i dati attuali, per tutti.`,{title:'Importa archivio',ok:'Importa'})) return;
-  const n=normalize(d);for(const k of ['categories','movements','recurring','learn','imports','holders','jars','positions']) S[k]=n[k];
+  const n=normalize(d);for(const k of ['categories','movements','recurring','learn','imports','holders','jars','positions','trades']) S[k]=n[k];
   S.movements.forEach(m=>{if(!m.id) m.id=uid()});S.recurring.forEach(r=>{if(!r.id) r.id=uid()});
   save();toast(`Importati ${S.movements.length} movimenti`)});
 let rT;addEventListener('resize',()=>{clearTimeout(rT);rT=setTimeout(()=>{if(V.tab==='dash') drawYearChart()},120)});
