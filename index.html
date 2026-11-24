@@ -177,6 +177,7 @@ body{padding-bottom:env(safe-area-inset-bottom,0px);padding-left:env(safe-area-i
 <dialog id="ask"></dialog>
 <datalist id="accList"></datalist>
 <input type="file" id="jsonIn" accept=".json,application/json" hidden>
+<input type="file" id="invFile" accept=".pdf,application/pdf" hidden>
 <div class="toast" id="toast"></div>
 <div class="tip" id="tip"></div>
 <script src="vendor/supabase.js"></script>
@@ -228,7 +229,7 @@ const DEFAULT_CATS=[
 ];
 const defaultCats=()=>DEFAULT_CATS.map(([name,kind,color,keywords],i)=>({id:'k'+i,name,kind,color,keywords}));
 function defaultState(){
-  return {v:1,catVer:2,categories:defaultCats(),movements:[],recurring:[],learn:{},imports:[],holders:{},jars:[]};
+  return {v:1,catVer:2,categories:defaultCats(),movements:[],recurring:[],learn:{},imports:[],holders:{},jars:[],positions:[]};
 }
 function normalize(d){
   const s=Object.assign(defaultState(),d||{});
@@ -236,6 +237,7 @@ function normalize(d){
   if(!s.learn||typeof s.learn!=='object') s.learn={};
   if(!s.holders||typeof s.holders!=='object') s.holders={};
   if(!Array.isArray(s.jars)) s.jars=[];
+  if(!Array.isArray(s.positions)) s.positions=[];
   s.recurring.forEach(r=>{if(!Array.isArray(r.skip)) r.skip=[]});
   if((s.catVer||1)<2){ // aggiunge le nuove parole chiave e categorie predefinite ai dati già salvati
     DEFAULT_CATS.forEach(([name,kind,color,kw],i)=>{
@@ -256,14 +258,15 @@ let rev=0;
    Leggono e scrivono solo gli account con l'email nella tabella members (regole nel database). */
 const CFG=window.SPESE_CONFIG||{};
 const DB={sb:null,user:null,state:'loading',ready:false,ro:false,pending:0,dirty:false,needReload:false,err:'',
-  remote:null,base:{mov:new Map(),rec:new Map(),imp:new Map(),cats:'',learn:'{}',holders:'{}',jars:'[]'},q:Promise.resolve()};
-function resetRemote(){DB.remote={mov:new Map(),rec:new Map(),imp:new Map(),cats:null,learn:null,holders:null,jars:null}}
+  remote:null,base:{mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),cats:'',learn:'{}',holders:'{}',jars:'[]'},q:Promise.resolve()};
+function resetRemote(){DB.remote={mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),mkt:new Map(),cats:null,learn:null,holders:null,jars:null}}
 resetRemote();
 const normMov=m=>({id:m.id,date:m.date,desc:m.desc||'',amount:round2(+m.amount||0),type:m.type==='entrata'?'entrata':'uscita',cat:m.cat||'',account:m.account||'',note:m.note||'',recId:m.recId||'',occ:m.occ||'',imp:m.imp||'',mese:m.mese||''});
+const normPos=p=>({id:p.id,isin:p.isin||'',name:p.name||'',kind:p.kind||'azione',qty:+p.qty||0,avg:p.avg==null||p.avg===''?null:+p.avg,refPrice:p.refPrice==null?null:+p.refPrice,refDate:p.refDate||'',newsQuery:p.newsQuery||'',cgId:p.cgId||'',broker:p.broker||'',archived:!!p.archived});
 const normRec=r=>({id:r.id,name:r.name||'',type:r.type==='entrata'?'entrata':'uscita',amount:round2(+r.amount||0),freq:r.freq||'m',start:r.start||'',end:r.end||'',cat:r.cat||'',account:r.account||'',paused:!!r.paused,skip:Array.isArray(r.skip)?[...r.skip]:[]});
 function setRemote(kind,id,data){
   const R=DB.remote;
-  if(kind==='mov'||kind==='rec'||kind==='imp'){if(data) R[kind].set(id,{...data,id});else R[kind].delete(id);return}
+  if(kind==='mov'||kind==='rec'||kind==='imp'||kind==='inv'||kind==='mkt'){if(data) R[kind].set(id,{...data,id});else R[kind].delete(id);return}
   if(kind!=='cfg') return;
   if(id==='categories') R.cats=data||null;
   else if(id==='learn') R.learn=data?{...(data.map||{})}:null;
@@ -279,6 +282,7 @@ function applyRemote(){
   S.learn={...(R.learn||{})};B.learn=JSON.stringify(S.learn);
   S.holders={...(R.holders||{})};B.holders=JSON.stringify(S.holders);
   S.jars=(R.jars||[]).map(j=>({...j}));B.jars=JSON.stringify(S.jars);
+  S.positions=[...R.inv.values()].map(normPos);B.inv=new Map(S.positions.map(p=>[p.id,JSON.stringify(p)]));
   rev++;cacheSoon();
 }
 function persist(){ // confronta con l'ultima versione salvata e manda solo quello che è cambiato
@@ -286,7 +290,7 @@ function persist(){ // confronta con l'ultima versione salvata e manda solo quel
   const sync=(kind,list,norm)=>{const seen=new Set();
     for(const x of list){const o=norm(x),j=JSON.stringify(o);seen.add(o.id);if(B[kind].get(o.id)!==j){B[kind].set(o.id,j);R[kind].set(o.id,o);ups.push({kind,id:o.id,data:o})}}
     for(const id of [...B[kind].keys()]) if(!seen.has(id)){B[kind].delete(id);R[kind].delete(id);dels.push([kind,id])}};
-  sync('mov',S.movements,normMov);sync('rec',S.recurring,normRec);sync('imp',S.imports,x=>({...x}));
+  sync('mov',S.movements,normMov);sync('rec',S.recurring,normRec);sync('imp',S.imports,x=>({...x}));sync('inv',S.positions||[],normPos);
   const cfg=(key,id,val,wrap)=>{const j=JSON.stringify(val);if(j!==B[key]){B[key]=j;const data=wrap(JSON.parse(j));setRemote('cfg',id,data);ups.push({kind:'cfg',id,data})}};
   cfg('cats','categories',S.categories,list=>({list,catVer:2}));
   cfg('learn','learn',S.learn||{},map=>({map}));
@@ -353,12 +357,12 @@ let cT;function cacheSoon(){if(!hasIdb()) return;clearTimeout(cT);cT=setTimeout(
 async function saveCache(){
   if(!DB.user||DB.state!=='ok') return;
   const R=DB.remote;
-  try{await idb.set('cache',{user:DB.user.email,at:Date.now(),R:{mov:[...R.mov.values()],rec:[...R.rec.values()],imp:[...R.imp.values()],cats:R.cats,learn:R.learn,holders:R.holders,jars:R.jars}})}catch(e){console.warn(e)}
+  try{await idb.set('cache',{user:DB.user.email,at:Date.now(),R:{mov:[...R.mov.values()],rec:[...R.rec.values()],imp:[...R.imp.values()],inv:[...R.inv.values()],mkt:[...R.mkt.values()],cats:R.cats,learn:R.learn,holders:R.holders,jars:R.jars}})}catch(e){console.warn(e)}
 }
 async function loadCache(email){
   if(!hasIdb()) return false;
   try{const c=await idb.get('cache');if(!c||c.user!==email) return false;
-    resetRemote();const R=DB.remote;c.R.mov.forEach(m=>R.mov.set(m.id,m));c.R.rec.forEach(r=>R.rec.set(r.id,r));c.R.imp.forEach(i=>R.imp.set(i.id,i));
+    resetRemote();const R=DB.remote;c.R.mov.forEach(m=>R.mov.set(m.id,m));c.R.rec.forEach(r=>R.rec.set(r.id,r));c.R.imp.forEach(i=>R.imp.set(i.id,i));(c.R.inv||[]).forEach(p=>R.inv.set(p.id,p));(c.R.mkt||[]).forEach(m=>R.mkt.set(m.id,m));
     R.cats=c.R.cats;R.learn=c.R.learn;R.holders=c.R.holders;R.jars=c.R.jars;DB.cacheAt=c.at;return true}catch{return false}
 }
 /* accesso */
@@ -421,7 +425,7 @@ document.addEventListener('submit',async e=>{
     toast('Password aggiornata');history.replaceState(null,'',location.pathname);start(data.user);
   }
 });
-function exportState(){return {v:1,catVer:2,exported:new Date().toISOString(),categories:S.categories,movements:S.movements.map(normMov),recurring:S.recurring.map(normRec),learn:S.learn,imports:S.imports,holders:S.holders,jars:S.jars}}
+function exportState(){return {v:1,catVer:2,exported:new Date().toISOString(),categories:S.categories,movements:S.movements.map(normMov),recurring:S.recurring.map(normRec),learn:S.learn,imports:S.imports,holders:S.holders,jars:S.jars,positions:(S.positions||[]).map(normPos)}}
 function saveFile(filename,data){
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([data],{type:filename.endsWith('.csv')?'text/csv;charset=utf-8':'application/json'}));
@@ -540,7 +544,7 @@ function accounts(){return [...new Set([...S.movements.map(m=>m.account),...S.re
 const NOW=new Date();
 const V={tab:'dash',y:NOW.getFullYear(),m:NOW.getMonth(),catScope:'m',payScope:'m',merScope:'m',merAll:false,catType:'uscita',
   f:{q:'',month:'',type:'',cat:'',acc:'',fc:true},limit:300,sel:new Set(),lastAcc:''};
-const TABS=[['dash','Riepilogo'],['mov','Movimenti'],['rec','Ricorrenti'],['jar','Salvadanai'],['imp','Importa estratti'],['cat','Categorie'],['dati','Dati e salvataggio']];
+const TABS=[['dash','Riepilogo'],['mov','Movimenti'],['rec','Ricorrenti'],['jar','Salvadanai'],['inv','Investimenti'],['imp','Importa estratti'],['cat','Categorie'],['dati','Dati e salvataggio']];
 
 function render(){
   const gate=gateView();
@@ -556,6 +560,7 @@ function render(){
   else if(V.tab==='imp'){v.innerHTML=viewImp();bindImp()}
   else if(V.tab==='cat') v.innerHTML=viewCat();
   else if(V.tab==='jar') v.innerHTML=viewJar();
+  else if(V.tab==='inv'){v.innerHTML=viewInv();drawInvChart();maybeRefreshMarket()}
   else if(V.tab==='dati') v.innerHTML=viewDati();
 }
 
@@ -597,6 +602,7 @@ function viewDash(){
     ${kpi('Totale uscite '+y,eur(yOut),`effettive ${eur(yOutR)} · <b>previste ${eur(yOutF)}</b>`,'neg')}
     ${kpi('Saldo '+y,eur(yIn-yOut),`effettivo ${eur(yInR-yOutR)} · previsto fine anno`,yIn-yOut>=0?'pos':'neg')}
     ${kpi('Uscite medie al mese',eur(yOut/12),`entrate medie ${eur(yIn/12)}`)}
+    ${(t=>t.n?`<div class="card kpi clk" data-act="tab" data-tab="inv" style="cursor:pointer"><div class="lbl">Investimenti (oggi)</div><div class="val">${eur(t.value)}</div><div class="sub">${t.pl!=null?`<span class="${t.pl>=0?'pos':'neg'}">${t.pl>=0?'+':''}${eur(t.pl)}</span> rispetto all'investito`:`${t.n} titoli`}</div></div>`:'')(invTotals())}
   </div>
   <div class="card"><div class="row between" style="margin-bottom:8px"><h2 style="margin:0">Andamento ${y}</h2>
     <div class="legend"><span><i class="sw-in"></i>Entrate</span><span><i class="sw-out"></i>Uscite</span><span><i class="sw-fc"></i>Previste (da ricorrenti)</span></div></div>
@@ -943,6 +949,164 @@ function openJar(id){
     S.jars=[...(S.jars||[])];
     if(id) S.jars=S.jars.map(x=>x.id===id?{...x,...o}:x); else S.jars.push({id:uid(),...o});
     save();toast(id?'Salvadanaio aggiornato':'Salvadanaio creato');
+  });
+}
+/* ============ investimenti ============
+   inv/<id>  un titolo posseduto: quantità, prezzo medio di acquisto, ricerca per le notizie (id = ISIN)
+   mkt/<id>  dati di mercato scritti dalla funzione "aggiorna-mercati" su Supabase: prezzo, storico, notizie */
+const INV_KIND={azione:'Azione',etf:'ETF / fondo',obbligazione:'Obbligazione / BTP',cripto:'Cripto'};
+const INV_COLOR={azione:'#2563eb',etf:'#0d9488',obbligazione:'#ca8a04',cripto:'#7c3aed'};
+const mkt=id=>(DB.remote.mkt&&DB.remote.mkt.get(id))||{};
+function invRows(){
+  return (S.positions||[]).filter(p=>!p.archived&&p.qty>0).map(p=>{
+    const m=mkt(p.id),price=m.price??p.refPrice??null,value=price!=null?round2(p.qty*price):null,cost=p.avg!=null?round2(p.qty*p.avg):null;
+    const pl=value!=null&&cost!=null?round2(value-cost):null,day=m.changePct!=null&&value!=null?round2(value-value/(1+m.changePct/100)):null;
+    return {p,m,price,value,cost,pl,plPct:pl!=null&&cost?pl/cost*100:null,day,live:m.price!=null};
+  }).sort((a,b)=>(b.value||0)-(a.value||0));
+}
+function invTotals(){
+  const r=invRows(),withCost=r.filter(x=>x.pl!=null);
+  const value=round2(r.reduce((a,x)=>a+(x.value||0),0)),cost=round2(withCost.reduce((a,x)=>a+x.cost,0));
+  return {n:r.length,value,cost,pl:withCost.length?round2(withCost.reduce((a,x)=>a+x.pl,0)):null,day:round2(r.reduce((a,x)=>a+(x.day||0),0)),missingAvg:r.length-withCost.length};
+}
+const pct=v=>(v>=0?'+':'')+v.toLocaleString('it-IT',{maximumFractionDigits:2,minimumFractionDigits:2})+'%';
+const qtyFmt=q=>q.toLocaleString('it-IT',{maximumFractionDigits:6});
+function viewInv(){
+  const rows=invRows(),t=invTotals(),st=mkt('_stato');
+  let h=`<div class="stack">${demoBanner()}
+  <div class="row between"><div class="small muted">${st.at?`Prezzi e notizie aggiornati il ${new Date(st.at).toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'})}`:'Prezzi e notizie non ancora aggiornati'}</div>
+    <div class="row"><button class="btn" data-act="invimp">Importa estratto Trade Republic</button><button class="btn" data-act="posnew">+ Titolo</button><button class="btn primary" data-act="invupd">Aggiorna ora</button></div></div>`;
+  if(!rows.length) return h+`<div class="card empty">Nessun titolo. Importa l'<b>Estratto del patrimonio</b> di Trade Republic (PDF) oppure aggiungi un titolo a mano.<br><br><button class="btn primary" data-act="invimp">Importa estratto Trade Republic</button></div></div>`;
+  h+=`<div class="grid kpis">${kpi('Valore attuale',eur(t.value),`${t.n} titoli`)}
+    ${kpi('Investito',t.cost?eur(t.cost):'—',t.missingAvg?`manca il prezzo medio di ${t.missingAvg} ${t.missingAvg===1?'titolo':'titoli'}`:'somma dei prezzi medi di acquisto')}
+    ${kpi('Guadagno / perdita',t.pl!=null?`${t.pl>=0?'+':''}${eur(t.pl)}`:'—',t.pl!=null&&t.cost?pct(t.pl/t.cost*100)+(t.missingAvg?' (sui titoli con prezzo medio)':''):'inserisci i prezzi medi di acquisto',t.pl==null?'':t.pl>=0?'pos':'neg')}
+    ${kpi('Oggi',`${t.day>=0?'+':''}${eur(t.day)}`,'variazione dalla chiusura precedente',t.day>=0?'pos':'neg')}</div>`;
+  // ripartizione per tipo
+  const byKind={};rows.forEach(x=>byKind[x.p.kind]=(byKind[x.p.kind]||0)+(x.value||0));
+  h+=`<div class="card"><h2>Ripartizione</h2><div class="cbar" style="height:14px">${Object.entries(byKind).map(([k,v])=>`<span title="${INV_KIND[k]||k}" style="width:${v/t.value*100}%;background:${INV_COLOR[k]||'#9ca3af'}"></span>`).join('')}</div>
+    <div class="legend" style="margin-top:8px">${Object.entries(byKind).map(([k,v])=>`<span><i style="background:${INV_COLOR[k]||'#9ca3af'}"></i>${INV_KIND[k]||k} ${Math.round(v/t.value*100)}% · ${eur(v)}</span>`).join('')}</div></div>`;
+  // titoli
+  h+=`<div class="card" style="padding:0"><div class="tblwrap" style="border:0"><table><thead><tr><th>Titolo</th><th class="num">Quantità</th><th class="num">Prezzo</th><th class="num">Valore</th><th class="num">Prezzo medio</th><th class="num">Guadagno</th><th class="num">Peso</th></tr></thead><tbody>
+  ${rows.map(x=>`<tr class="clk" data-act="posedit" data-id="${esc(x.p.id)}"><td><b>${esc(x.p.name)}</b><div class="small muted">${esc(INV_KIND[x.p.kind]||'')} · ${esc(x.p.isin||x.p.cgId)}${x.m.err?' · <span class="neg" title="'+esc(x.m.err)+'">prezzo non aggiornato</span>':''}${!x.live?' · prezzo dell\'estratto':''}</div></td>
+    <td class="num">${qtyFmt(x.p.qty)}</td>
+    <td class="num">${x.price!=null?eur(x.price):'—'}${x.m.changePct!=null?`<div class="small ${x.m.changePct>=0?'pos':'neg'}">${pct(x.m.changePct)}</div>`:''}</td>
+    <td class="num"><b>${x.value!=null?eur(x.value):'—'}</b></td>
+    <td class="num">${x.p.avg!=null?eur(x.p.avg):'<span class="muted">da inserire</span>'}</td>
+    <td class="num">${x.pl!=null?`<span class="${x.pl>=0?'pos':'neg'}">${x.pl>=0?'+':''}${eur(x.pl)}<div class="small">${pct(x.plPct)}</div></span>`:'—'}</td>
+    <td class="num muted">${x.value!=null&&t.value?Math.round(x.value/t.value*100)+'%':''}</td></tr>`).join('')}</tbody></table></div></div>`;
+  h+=`<div class="card"><h2>Andamento del portafoglio</h2><div id="invChart"></div><p class="small muted" style="margin:6px 0 0">Valore calcolato con le quantità di oggi sui prezzi di chiusura salvati. Lo storico cresce giorno per giorno da quando l'aggiornamento automatico è attivo.</p></div>`;
+  // notizie
+  const news=rows.flatMap(x=>(x.m.news||[]).map(n=>({...n,who:x.p.name}))).filter(n=>n.title).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  const seen=new Set(),uniq=news.filter(n=>{const k=n.title.toLowerCase();if(seen.has(k)) return false;seen.add(k);return true}).slice(0,30);
+  h+=`<div class="card"><h2>Notizie sui vostri titoli</h2>${uniq.length?`<div class="upc">${uniq.map(n=>`<div class="u" style="grid-template-columns:62px 1fr"><span class="small muted">${n.date?fmtShort(n.date.slice(0,10)):''}</span><span><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a><div class="small muted">${esc(n.source||'')} · <span class="chip">${esc(n.who)}</span></div></span></div>`).join('')}</div>`
+    :`<div class="empty">Le notizie arrivano al prossimo aggiornamento.</div>`}</div>`;
+  return h+`</div>`;
+}
+function drawInvChart(){
+  const el=$('#invChart');if(!el) return;
+  const rows=invRows(),dates=[...new Set(rows.flatMap(x=>Object.keys(x.m.history||{})))].sort();
+  if(dates.length<2){el.innerHTML=`<div class="empty">Il grafico compare dopo almeno due giorni di prezzi salvati.</div>`;return}
+  const series=dates.map(d=>{let v=0;for(const x of rows){const hst=x.m.history||{};const ks=Object.keys(hst).filter(k=>k<=d).sort();const pr=ks.length?hst[ks[ks.length-1]]:(x.p.refPrice??null);if(pr!=null) v+=x.p.qty*pr}return [d,round2(v)]});
+  const W=Math.max(300,el.clientWidth),H=200,L=58,R=10,T=10,B=24,vals=series.map(s=>s[1]),mn=Math.min(...vals),mx=Math.max(...vals),pad=(mx-mn)*0.1||mx*0.02||1;
+  const lo=mn-pad,hi=mx+pad,X=i=>L+(W-L-R)*i/(series.length-1),Y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo));
+  const pts=series.map((s,i)=>`${X(i).toFixed(1)},${Y(s[1]).toFixed(1)}`).join(' ');
+  let s=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Valore del portafoglio nel tempo">`;
+  for(let k=0;k<=3;k++){const v=lo+(hi-lo)*k/3,yy=Y(v);s+=`<line x1="${L}" x2="${W-R}" y1="${yy}" y2="${yy}" style="stroke:var(--line)"/><text x="${L-6}" y="${yy+4}" text-anchor="end" style="font-size:11px;fill:var(--muted)">${eurK(v)} €</text>`}
+  s+=`<polygon points="${X(0)},${Y(lo)} ${pts} ${X(series.length-1)},${Y(lo)}" style="fill:var(--accent-soft)"/><polyline points="${pts}" style="fill:none;stroke:var(--accent);stroke-width:2"/>`;
+  s+=`<circle cx="${X(series.length-1)}" cy="${Y(vals[vals.length-1])}" r="4" style="fill:var(--accent)"/>`;
+  s+=`<text x="${L}" y="${H-6}" style="font-size:11px;fill:var(--muted)">${fmtShort(dates[0])}</text><text x="${W-R}" y="${H-6}" text-anchor="end" style="font-size:11px;fill:var(--muted)">${fmtShort(dates[dates.length-1])}</text>`;
+  el.innerHTML=s+'</svg>';
+}
+let mktBusy=false;
+async function refreshMarket(manual){
+  if(!DB.sb||DB.state!=='ok'||mktBusy) return;
+  mktBusy=true;if(manual) toast('Aggiorno prezzi e notizie…');
+  try{const {data,error}=await DB.sb.functions.invoke('aggiorna-mercati');if(error) throw error;
+    if(manual) toast(data?.skipped?'Già aggiornati pochi minuti fa':data?.errori?.length?`Aggiornati, ma ${data.errori.length} titoli senza prezzo`:'Prezzi e notizie aggiornati');
+    await refresh()}
+  catch(e){if(manual) toast('Aggiornamento non riuscito: '+(e.message||e))}
+  finally{mktBusy=false}
+}
+function maybeRefreshMarket(){const at=mkt('_stato').at;if((S.positions||[]).some(p=>!p.archived&&p.qty>0)&&(!at||Date.now()-Date.parse(at)>6*36e5)) refreshMarket(false)}
+/* nome di ricerca per le notizie: "NVIDIA Corp." → "NVIDIA azioni", "Core MSCI World USD (Acc)" → "MSCI World" */
+function defaultNewsQuery(name,kind){
+  const n=String(name||'');
+  if(kind==='etf') return n.replace(/\((acc|dist)\)|\b(USD|EUR|GBP|CHF|UCITS|ETF|Core|iShares|Xtrackers|Vanguard|Amundi|SPDR)\b/gi,' ').replace(/\s+/g,' ').trim();
+  return (n.replace(/\b(Corp\.?|Corporation|Inc\.?|S\.p\.A\.?|SpA|AG|N\.V\.|SE|plc|Ltd\.?|Co\.)\s*$/i,'').trim()+' azioni').trim();
+}
+const guessKind=name=>/\((acc|dist)\)|\betf\b|ucits/i.test(name)?'etf':/\b(btp|bot|bond|obbligaz|treasury)\b/i.test(name)?'obbligazione':'azione';
+/* estratto del patrimonio di Trade Republic: righe "2,466446 pezzi NVIDIA Corp. 142,32 351,02" seguite da "ISIN: ..." */
+function parseTRHoldings(lines){
+  const out=[];let cur=null,total=null,date='',m;
+  for(const t of lines){
+    if(!date&&(m=t.match(/al giorno (\d{2})\.(\d{2})\.(\d{4})/i))) date=`${m[3]}-${m[2]}-${m[1]}`;
+    if((m=t.match(/^([\d.]+(?:,\d+)?)\s+(?:pezzi|pz\.?)\s+(.+?)\s+([\d.]+,\d+)\s+([\d.]+,\d+)$/i))){cur={qty:parseNum(m[1]),name:m[2].trim(),price:parseNum(m[3]),value:parseNum(m[4]),isin:''};out.push(cur);continue}
+    if(cur&&!cur.isin&&(m=t.match(/ISIN:\s*([A-Z]{2}[A-Z0-9]{9}\d)/))) cur.isin=m[1];
+    if((m=t.match(/NUMERO DI POSIZIONI:\s*\d+\s+([\d.]+,\d+)\s*EUR/i))) total=parseNum(m[1]);
+  }
+  const positions=out.filter(p=>p.isin&&p.qty);
+  return {date,total,positions,sum:round2(positions.reduce((a,p)=>a+p.value,0))};
+}
+async function pdfTextLines(file){
+  if(!window.pdfjsLib){await loadScript(PDFJS_WORKER);await loadScript(PDFJS_URL);pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS_WORKER}
+  const pdf=await pdfjsLib.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise,lines=[];
+  for(let p=1;p<=pdf.numPages;p++){
+    const tc=await (await pdf.getPage(p)).getTextContent();
+    const items=tc.items.filter(i=>i.str&&i.str.trim()).map(i=>({s:i.str.trim(),x:i.transform[4],y:i.transform[5]})).sort((a,b)=>b.y-a.y||a.x-b.x);
+    let cur=null;for(const it of items){if(cur&&Math.abs(cur.y-it.y)<=3) cur.items.push(it);else{cur={y:it.y,items:[it]};lines.push(cur)}}
+  }
+  return lines.map(l=>l.items.sort((a,b)=>a.x-b.x).map(i=>i.s).join(' ').replace(/\s+/g,' ').trim());
+}
+async function importTR(file){
+  let r;try{r=parseTRHoldings(await pdfTextLines(file))}catch(e){return notice('Non sono riuscito a leggere il PDF: '+e.message,'File non letto')}
+  if(!r.positions.length) return notice("Nel PDF non ho trovato titoli. Serve l'«Estratto del patrimonio» di Trade Republic (Profilo → Attività → Documenti).",'Nessun titolo trovato');
+  const cur=new Map((S.positions||[]).map(p=>[p.id,p]));
+  const lines=r.positions.map(x=>{const o=cur.get(x.isin);return {...x,status:!o||o.archived||!o.qty?'nuovo':Math.abs(o.qty-x.qty)>1e-9?`quantità ${qtyFmt(o.qty)} → ${qtyFmt(x.qty)}`:'invariato'}});
+  const gone=(S.positions||[]).filter(p=>!p.archived&&p.qty>0&&p.broker==='Trade Republic'&&!r.positions.some(x=>x.isin===p.id));
+  const ok=r.total==null||Math.abs(r.total-r.sum)<0.02;
+  openDlg(`<form><div class="dlg-h"><h3>Estratto del patrimonio${r.date?' al '+fmtDate(r.date):''}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  <div style="padding:12px 16px;display:grid;gap:10px">
+    <div class="banner ${ok?'ok':''}"><div>${ok?`✔ I conti tornano: ${r.positions.length} titoli per ${eur(r.sum)}, come il totale del documento.`:`⚠ La somma dei titoli letti (${eur(r.sum)}) non coincide con il totale del documento (${eur(r.total)}): controlla prima di confermare.`}</div></div>
+    <div class="tblwrap"><table class="small"><thead><tr><th>Titolo</th><th class="num">Quantità</th><th class="num">Valore</th><th>Cosa cambia</th></tr></thead><tbody>
+    ${lines.map(x=>`<tr><td>${esc(x.name)}<div class="muted">${x.isin}</div></td><td class="num">${qtyFmt(x.qty)}</td><td class="num">${eur(x.value)}</td><td>${esc(x.status)}</td></tr>`).join('')}
+    ${gone.map(p=>`<tr><td>${esc(p.name)}<div class="muted">${esc(p.isin)}</div></td><td class="num">0</td><td></td><td class="neg">non più presente</td></tr>`).join('')}</tbody></table></div>
+    <p class="small muted" style="margin:0">Le quantità prendono quelle dell'estratto. Prezzo medio di acquisto e ricerca delle notizie che avete già inserito restano come sono.</p>
+  </div><div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Aggiorna il portafoglio</button></div></form>`,
+  ()=>{
+    S.positions=[...(S.positions||[])];
+    for(const x of r.positions){const i=S.positions.findIndex(p=>p.id===x.isin),o=i>=0?S.positions[i]:null,kind=o?.kind||guessKind(x.name);
+      const np={...(o||{}),id:x.isin,isin:x.isin,name:o?.name||x.name,kind,qty:x.qty,refPrice:x.price,refDate:r.date,broker:'Trade Republic',archived:false,newsQuery:o?.newsQuery||defaultNewsQuery(x.name,kind),avg:o?.avg??null};
+      if(i>=0) S.positions[i]=np;else S.positions.push(np)}
+    for(const p of gone){const i=S.positions.findIndex(q=>q.id===p.id);S.positions[i]={...S.positions[i],qty:0}}
+    save();toast('Portafoglio aggiornato');setTimeout(()=>refreshMarket(false),300);
+  });
+}
+function openPos(id){
+  const p=id?(S.positions||[]).find(x=>x.id===id):{id:'',isin:'',name:'',kind:'azione',qty:'',avg:null,newsQuery:'',cgId:''};if(!p) return;
+  const m=mkt(p.id),hist=Object.entries(m.history||{}).sort().slice(-5).reverse();
+  const f=openDlg(`<form><div class="dlg-h"><h3>${id?esc(p.name):'Nuovo titolo'}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  <div class="form">
+    <label class="full">Nome<input id="psName" name="name" required value="${esc(p.name)}"></label>
+    <label>ISIN${id?'':' (es. IE00B4L5Y983)'}<input id="psIsin" name="isin" value="${esc(p.isin)}" ${id?'readonly':''} placeholder="12 caratteri"></label>
+    <label>Tipo<select id="psKind" name="kind">${Object.entries(INV_KIND).map(([k,l])=>`<option value="${k}" ${p.kind===k?'selected':''}>${l}</option>`).join('')}</select></label>
+    <label>Quantità<input id="psQty" name="qty" inputmode="decimal" required value="${esc(p.qty===''?'':String(p.qty).replace('.',','))}"></label>
+    <label>Prezzo medio di acquisto (€)<input id="psAvg" name="avg" inputmode="decimal" value="${p.avg==null?'':String(p.avg).replace('.',',')}" placeholder="dall'app del broker"></label>
+    <label class="full">Ricerca per le notizie<input id="psNews" name="newsQuery" value="${esc(p.newsQuery)}" placeholder="es. NVIDIA azioni"></label>
+    <label class="full">ID CoinGecko (solo cripto)<input id="psCg" name="cgId" value="${esc(p.cgId)}" placeholder="es. bitcoin"></label>
+    ${id?`<div class="full small muted">${m.price!=null?`Ultimo prezzo ${eur(m.price)} (${esc(m.source||'')}, ${new Date(m.at).toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'})})`:'Prezzo non ancora aggiornato'}${m.err?` · <span class="neg">${esc(m.err)}</span>`:''}${hist.length?`<br>Chiusure: ${hist.map(([d,v])=>fmtShort(d)+' '+eur(v)).join(' · ')}`:''}</div>
+      ${(m.news||[]).length?`<div class="full upc">${m.news.slice(0,5).map(n=>`<div class="u" style="grid-template-columns:62px 1fr"><span class="small muted">${n.date?fmtShort(n.date.slice(0,10)):''}</span><a class="small" href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a></div>`).join('')}</div>`:''}`:''}
+  </div><div class="dlg-f">${id?`<button type="button" class="btn danger" data-act="posdel" data-id="${esc(id)}" style="margin-right:auto">Elimina</button>`:''}<button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
+  fd=>{
+    const qty=parseNum(fd.get('qty')),avgRaw=String(fd.get('avg')||'').trim(),avg=avgRaw?parseNum(avgRaw):null,kind=fd.get('kind');
+    const isin=String(fd.get('isin')||'').trim().toUpperCase(),cgId=String(fd.get('cgId')||'').trim().toLowerCase();
+    if(qty==null||qty<0){toast('Quantità non valida');return false}
+    if(avgRaw&&(avg==null||avg<0)){toast('Prezzo medio non valido');return false}
+    if(kind!=='cripto'&&!/^[A-Z]{2}[A-Z0-9]{9}\d$/.test(isin)){toast('ISIN non valido: sono 12 caratteri, es. IE00B4L5Y983');return false}
+    if(kind==='cripto'&&!cgId){toast("Per le cripto serve l'ID CoinGecko");return false}
+    const nid=id||(kind==='cripto'?'CRYPTO-'+cgId.toUpperCase():isin);
+    if(!id&&(S.positions||[]).some(x=>x.id===nid&&!x.archived)){toast('Questo titolo è già in portafoglio');return false}
+    const name=fd.get('name').trim(),o={...p,id:nid,isin,name,kind,qty,avg,cgId,newsQuery:fd.get('newsQuery').trim()||defaultNewsQuery(name,kind),archived:false};
+    S.positions=[...(S.positions||[]).filter(x=>x.id!==nid),o];save();toast(id?'Titolo aggiornato':'Titolo aggiunto');if(!id) setTimeout(()=>refreshMarket(false),300);
   });
 }
 /* ============ RICORRENTI ============ */
@@ -1422,6 +1586,12 @@ const ACT={
   delmov:async a=>{const m=S.movements.find(x=>x.id===a.dataset.id);if(m&&await ask(`Eliminare “${m.desc}” del ${fmtDate(m.date)} (${eur(m.amount)})?`,{title:'Elimina movimento',ok:'Elimina'})){S.movements=S.movements.filter(x=>x!==m);if(dlg.open) dlg.close();save();toast('Movimento eliminato')}},
   newrec:()=>openRec(null),
   newjar:()=>openJar(null),
+  invupd:()=>refreshMarket(true),
+  invimp:()=>$('#invFile').click(),
+  posnew:()=>openPos(null),
+  posedit:a=>openPos(a.dataset.id),
+  posdel:async a=>{const p=(S.positions||[]).find(x=>x.id===a.dataset.id);if(!p||!await ask(`Togliere “${p.name}” dal portafoglio?`,{title:'Elimina titolo',ok:'Elimina'})) return;
+    S.positions=S.positions.filter(x=>x!==p);if(dlg.open) dlg.close();save();toast('Titolo eliminato')},
   editjar:a=>openJar(a.dataset.id),
   jarput:a=>{const j=jarOf('jar:'+a.dataset.id);if(j) openMov(null,{type:'uscita',cat:'jar:'+j.id,desc:'Salvadanaio '+j.name,account:''})},
   jartake:a=>{const j=jarOf('jar:'+a.dataset.id);if(j) openMov(null,{type:'entrata',cat:'jar:'+j.id,desc:'Prelievo dal salvadanaio '+j.name,account:''})},
@@ -1455,7 +1625,7 @@ const ACT={
   expcsv:()=>exportCSV(),
   wipe:async()=>{if(!await ask('Eliminare DEFINITIVAMENTE tutti i movimenti, le ricorrenti, i salvadanai e le categorie personalizzate, per tutti gli account?\nTi consiglio di esportare un backup prima.',{title:'Elimina tutti i dati',ok:'Elimina tutto'})) return;
     if(DB.state!=='ok'||DB.ro) return toast('Non puoi eliminare i dati adesso');
-    const dels=[];for(const k of ['mov','rec','imp']) for(const id of DB.remote[k].keys()) dels.push([k,id]);
+    const dels=[];for(const k of ['mov','rec','imp','inv']) for(const id of DB.remote[k].keys()) dels.push([k,id]);
     for(const id of ['categories','learn','cards','jars']) dels.push(['cfg',id]);
     resetRemote();applyRemote();write([],dels);render();toast('Dati eliminati')},
   logout:()=>signOut(),
@@ -1491,10 +1661,11 @@ const CHG={
 };
 document.addEventListener('change',e=>{const a=e.target.closest('[data-chg]');if(a&&CHG[a.dataset.chg]) CHG[a.dataset.chg](a,e)});
 let qT;document.addEventListener('input',e=>{if(e.target.id==='q'){clearTimeout(qT);qT=setTimeout(()=>{V.f.q=e.target.value;V.limit=300;renderMovList()},150)}});
+$('#invFile').addEventListener('change',e=>{const f=e.target.files[0];e.target.value='';if(f) importTR(f)});
 $('#jsonIn').addEventListener('change',async e=>{const f=e.target.files[0];e.target.value='';if(!f) return;
   let d;try{d=JSON.parse(await f.text());if(!Array.isArray(d.movements)) throw 0}catch{return notice('Il file non è un archivio valido di Spese Mensili.','File non valido')}
   if(!await ask(`Il file contiene ${d.movements.length} movimenti e ${(d.recurring||[]).length} ricorrenti.\nSostituiscono i dati attuali, per tutti.`,{title:'Importa archivio',ok:'Importa'})) return;
-  const n=normalize(d);for(const k of ['categories','movements','recurring','learn','imports','holders','jars']) S[k]=n[k];
+  const n=normalize(d);for(const k of ['categories','movements','recurring','learn','imports','holders','jars','positions']) S[k]=n[k];
   S.movements.forEach(m=>{if(!m.id) m.id=uid()});S.recurring.forEach(r=>{if(!r.id) r.id=uid()});
   save();toast(`Importati ${S.movements.length} movimenti`)});
 let rT;addEventListener('resize',()=>{clearTimeout(rT);rT=setTimeout(()=>{if(V.tab==='dash') drawYearChart()},120)});

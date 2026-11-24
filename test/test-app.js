@@ -25,7 +25,7 @@ function loadPage(file) {
     confirm: () => true, alert() {}, location: { protocol: 'file:', origin: '', pathname: '/' }, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v } } };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save};', ctx);
+  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind};', ctx);
   return ctx.__t;
 }
 
@@ -188,6 +188,36 @@ const CASES = [
     await new Promise(r => setTimeout(r, 20));
     return t.DB.ro === true && sb.calls.some(c => c[0] === 'load');
   }],
+  // ---------- investimenti (numeri inventati) ----------
+  ['Trade Republic: legge le posizioni dell\'estratto del patrimonio e i conti tornano', t => {
+    const lines = ['ESTRATTO DEL PATRIMONIO', 'al giorno 02.03.2026', 'PZ / NOMINALE NOME DEL TITOLO PREZZO AL PEZZO VALORE IN EUR',
+      '10 pezzi Esempio S.p.A. 5,00 50,00', 'Azioni nom. EO 1 02.03.2026', 'ISIN: IT0000000001', 'Luogo di custodia: Italia',
+      '0,5 pezzi World Index USD (Acc) 1.200,00 600,00', 'ISIN: IE0000000002 02.03.2026',
+      '2,25 pezzi Example Corp. 100,00 225,00', 'Registered Shares DL-,001 02.03.2026', 'ISIN: US0000000003',
+      'NUMERO DI POSIZIONI: 3 875,00 EUR'];
+    const r = t.parseTRHoldings(lines);
+    return r.date === '2026-03-02' && r.positions.length === 3 && r.total === 875 && r.sum === 875
+      && r.positions[1].qty === 0.5 && r.positions[1].price === 1200 && r.positions[1].isin === 'IE0000000002'
+      && t.guessKind(r.positions[1].name) === 'etf' && t.guessKind(r.positions[0].name) === 'azione';
+  }],
+  ['investimenti: valore, guadagno e variazione del giorno', t => {
+    t.resetRemote();
+    t.S.positions = [{ id: 'IT0000000001', isin: 'IT0000000001', name: 'Esempio', kind: 'azione', qty: 10, avg: 4, refPrice: 5 },
+      { id: 'IE0000000002', isin: 'IE0000000002', name: 'World', kind: 'etf', qty: 2, avg: null, refPrice: 100 }];
+    t.setRemote('mkt', 'IT0000000001', { price: 6, changePct: 20 }); // ieri 5, oggi 6
+    const x = t.invTotals();
+    return x.value === 260 && x.cost === 40 && x.pl === 20 && x.missingAvg === 1 && x.day === 10;
+  }],
+  ['investimenti: il titolo si salva come riga "inv" su Supabase', async t => {
+    const sb = fakeSb(); connect(t, sb, [{ kind: 'cfg', id: 'categories', data: { list: t.S.categories, catVer: 2 } }]);
+    t.S.positions = [{ id: 'IE0000000002', isin: 'IE0000000002', name: 'World', kind: 'etf', qty: 2, avg: 90 }];
+    t.save(); await t.DB.q;
+    const ups = sb.calls.filter(c => c[0] === 'upsert').flatMap(c => c[1]);
+    return ups.length === 1 && ups[0].kind === 'inv' && ups[0].data.qty === 2 && ups[0].data.avg === 90;
+  }],
+  ['notizie: ricerca proposta dal nome del titolo', t =>
+    t.defaultNewsQuery('Example Corp.', 'azione') === 'Example azioni' && t.defaultNewsQuery('Esempio S.p.A.', 'azione') === 'Esempio azioni'
+      && t.defaultNewsQuery('Core MSCI World USD (Acc)', 'etf') === 'MSCI World'],
 ];
 
 let failed = 0;

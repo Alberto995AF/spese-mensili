@@ -66,3 +66,13 @@ exception when duplicate_object then null; end $$;
 -- ▼▼▼ Le email della famiglia (le stesse degli utenti in Authentication → Users) ▼▼▼
 -- Per aggiungere qualcuno più avanti basta eseguire di nuovo solo questa riga con la sua email:
 -- insert into public.members (email) values ('nome@esempio.it') on conflict do nothing;
+
+-- ▼▼▼ Investimenti (novembre 2026) ▼▼▼
+-- inv = titolo posseduto, mkt = prezzi e notizie scritti dalla funzione "aggiorna-mercati"
+alter table public.items drop constraint if exists items_kind_check;
+alter table public.items add constraint items_kind_check check (kind in ('mov','rec','imp','cfg','inv','mkt'));
+-- la funzione su Supabase usa il ruolo di servizio
+grant select, insert, update, delete on public.items to service_role;
+-- aggiornamento automatico pianificato
+create extension if not exists pg_cron;
+create extension if not exists pg_net;

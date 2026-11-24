@@ -10,6 +10,7 @@ Si installa sulla schermata Home come un'app (PWA), come Cantina.
 - **Ricorrenti**: stipendio, affitto, bollette… con le previsioni dei mesi futuri.
 - **Salvadanai**: soldi messi da parte, con obiettivo e versamenti ricorrenti. Non contano come spesa.
 - **Dati**: backup JSON, esportazione CSV per Excel.
+- **Investimenti**: titoli in portafoglio (import dell'*Estratto del patrimonio* di Trade Republic), valore, guadagno sul prezzo medio, ripartizione, andamento e notizie in italiano su ogni titolo. Prezzi da Tradegate (euro, per ISIN) e CoinGecko, notizie da Google News: li aggiorna ogni sera la funzione `supabase/functions/aggiorna-mercati` (Cron di Supabase) e il pulsante *Aggiorna ora*.
 
 ## Dove sono i dati
 
