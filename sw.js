@@ -1,6 +1,6 @@
 // Service worker: l'app si apre anche senza rete.
 // Dopo una modifica al codice aumenta VERSION, così i telefoni scaricano la versione nuova.
-const VERSION = 'spese-v5';
+const VERSION = 'spese-v6';
 const SHELL = ['./', 'index.html', 'config.js', 'vendor/supabase.js', 'manifest.webmanifest',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/favicon-32.png'];
 const STATIC_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'cdnjs.cloudflare.com'];

@@ -25,7 +25,7 @@ function loadPage(file) {
     confirm: () => true, alert() {}, location: { protocol: 'file:', origin: '', pathname: '/' }, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v } } };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount};', ctx);
+  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv};', ctx);
   return ctx.__t;
 }
 
@@ -302,6 +302,24 @@ const CASES = [
     return t.suggestAccount(usd) === 'Revolut' && t.suggestAccount(eurAcc) === 'Revolut 2'
       && t.suggestAccount({ broker: 'Revolut', positions: [{ isin: 'XX0000000009' }] }) === 'Revolut 3'
       && t.suggestAccount({ broker: 'Trade Republic', positions: [] }) === 'Trade Republic';
+  }],
+  ['robo-advisor: una sola voce con titoli + liquidità, versamenti letti e riconosciuta al giro dopo', t => {
+    t.S.positions = []; t.S.trades = [];
+    const r = t.parseRevolut(['Period 01 Mar 2026 - 31 Mar 2026', 'USD Account summary', 'Total US$0 US$0', 'USD Portfolio breakdown', 'Total US$0',
+      'EUR Account summary', 'Starting Ending', 'Positions Value €80.00 €100.00', 'Cash value* €1.00 €2.50', 'Total €81.00 €102.50',
+      'EUR Portfolio breakdown', 'AAAA Example World UCITS ETF (Acc) IE0000000002 2.5 €24.00 €60.00 58.5%',
+      'BBBB Example Bond UCITS ETF (Dist) LU0000000005 4 €10.00 €40.00 39.0%',
+      'Positions Value €100.00 97.56%', 'Cash value €2.50 2.44%', 'Total €102.50', 'EUR Transactions',
+      '01 Mar 2026 09:36:05 GMT Cash top-up €20 €0 €0', '02 Mar 2026 12:00:01 GMT AAAA Trade - Market 0.5 €24.00 Buy €12.00 €0 €0']);
+    const mv = t.managedValue(r);
+    const g = t.normPos({ id: 'GEST-1', name: 'Robo', kind: 'gestita', qty: 1, avg: 90, refPrice: 102.5, refDate: r.date, values: { [r.date]: 102.5 }, isins: ['IE0000000002', 'LU0000000005'] });
+    t.S.positions = [g];
+    const row = t.invRows()[0];
+    return r.ok && r.grand.EUR === 102.5 && r.cash.EUR === 2.5 && r.start.EUR === 81 && r.flows.length === 1 && r.flows[0].amount === 20
+      && mv.value === 102.5 && mv.positions === 100 && mv.cash === 2.5 && mv.in === 20
+      && t.managedFor(r) === g && t.managedFor({ positions: [{ isin: 'US0000000003' }] }) === null
+      && g.values[r.date] === 102.5 && g.isins.length === 2 && row.value === 102.5 && row.pl === 12.5
+      && /Robo[\s\S]*versato/.test(t.viewInv());
   }],
 ];
 

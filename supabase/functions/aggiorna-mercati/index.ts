@@ -74,7 +74,7 @@ async function run(sb: any) {
 
   const rows: { kind: string; id: string; data: Record<string, unknown> }[] = [];
   for (const { id, data: p } of inv ?? []) {
-    if (p.archived || !(p.qty > 0)) continue;
+    if (p.archived || !(p.qty > 0) || p.kind === 'gestita') continue; // le gestioni hanno solo il valore dell'estratto
     const o = prev.get(id) ?? {};
     const rec: Record<string, any> = { ...o, id };
     try {

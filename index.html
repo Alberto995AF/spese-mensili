@@ -263,7 +263,7 @@ const DB={sb:null,user:null,state:'loading',ready:false,ro:false,pending:0,dirty
 function resetRemote(){DB.remote={mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),trd:new Map(),mkt:new Map(),cats:null,learn:null,holders:null,jars:null}}
 resetRemote();
 const normMov=m=>({id:m.id,date:m.date,desc:m.desc||'',amount:round2(+m.amount||0),type:m.type==='entrata'?'entrata':'uscita',cat:m.cat||'',account:m.account||'',note:m.note||'',recId:m.recId||'',occ:m.occ||'',imp:m.imp||'',mese:m.mese||''});
-const normPos=p=>({id:p.id,isin:p.isin||'',name:p.name||'',kind:p.kind||'azione',qty:+p.qty||0,avg:p.avg==null||p.avg===''?null:+p.avg,refPrice:p.refPrice==null?null:+p.refPrice,refDate:p.refDate||'',newsQuery:p.newsQuery||'',cgId:p.cgId||'',broker:p.broker||'',archived:!!p.archived});
+const normPos=p=>({id:p.id,isin:p.isin||'',name:p.name||'',kind:p.kind||'azione',qty:+p.qty||0,avg:p.avg==null||p.avg===''?null:+p.avg,refPrice:p.refPrice==null?null:+p.refPrice,refDate:p.refDate||'',newsQuery:p.newsQuery||'',cgId:p.cgId||'',broker:p.broker||'',archived:!!p.archived,...(p.symbol?{symbol:p.symbol}:{}),...(p.kind==='gestita'?{values:p.values||{},isins:p.isins||[],paidAt:p.paidAt||''}:{})});
 const normTrade=t=>({id:t.id,pos:t.pos||'',date:t.date||'',type:t.type||'buy',qty:+t.qty||0,price:t.price==null||t.price===''?null:+t.price,amount:t.amount==null||t.amount===''?null:+t.amount,fees:+t.fees||0,taxes:+t.taxes||0,src:t.src||'',ref:t.ref||'',note:t.note||'',broker:t.broker||(/trade republic|estratto del patrimonio/i.test(t.src||'')?'Trade Republic':''),currency:t.currency||'EUR',fx:t.fx==null||t.fx===''?1:+t.fx});
 const normRec=r=>({id:r.id,name:r.name||'',type:r.type==='entrata'?'entrata':'uscita',amount:round2(+r.amount||0),freq:r.freq||'m',start:r.start||'',end:r.end||'',cat:r.cat||'',account:r.account||'',paused:!!r.paused,skip:Array.isArray(r.skip)?[...r.skip]:[]});
 function setRemote(kind,id,data){
@@ -957,8 +957,8 @@ function openJar(id){
 /* ============ investimenti ============
    inv/<id>  un titolo posseduto: quantità, prezzo medio di acquisto, ricerca per le notizie (id = ISIN)
    mkt/<id>  dati di mercato scritti dalla funzione "aggiorna-mercati" su Supabase: prezzo, storico, notizie */
-const INV_KIND={azione:'Azione',etf:'ETF / fondo',obbligazione:'Obbligazione / BTP',cripto:'Cripto'};
-const INV_COLOR={azione:'#2563eb',etf:'#0d9488',obbligazione:'#ca8a04',cripto:'#7c3aed'};
+const INV_KIND={azione:'Azione',etf:'ETF / fondo',obbligazione:'Obbligazione / BTP',cripto:'Cripto',gestita:'Gestione / robo-advisor'};
+const INV_COLOR={azione:'#2563eb',etf:'#0d9488',obbligazione:'#ca8a04',cripto:'#7c3aed',gestita:'#db2777'};
 const mkt=id=>(DB.remote.mkt&&DB.remote.mkt.get(id))||{};
 /* registro delle operazioni: quantità e prezzo medio si calcolano da qui (costo medio ponderato, in euro).
    Ogni operazione ricorda broker, valuta e cambio (euro per unità di valuta, BCE del giorno). */
@@ -991,7 +991,7 @@ async function fxRate(cur,date){
 }
 function invRows(){
   return (S.positions||[]).filter(p=>!p.archived&&p.qty>0).map(p=>{
-    const m=mkt(p.id),price=m.price??p.refPrice??null,value=price!=null?round2(p.qty*price):null,cost=p.avg!=null?round2(p.qty*p.avg):null;
+    const m=p.kind==='gestita'?{}:mkt(p.id),price=m.price??p.refPrice??null,value=price!=null?round2(p.qty*price):null,cost=p.avg!=null?round2(p.qty*p.avg):null;
     const pl=value!=null&&cost!=null?round2(value-cost):null,day=m.changePct!=null&&value!=null?round2(value-value/(1+m.changePct/100)):null;
     return {p,m,price,value,cost,pl,plPct:pl!=null&&cost?pl/cost*100:null,day,live:m.price!=null};
   }).sort((a,b)=>(b.value||0)-(a.value||0));
@@ -1011,7 +1011,7 @@ function viewInv(){
     <div class="row"><button class="btn" data-act="invimp">Importa PDF del broker</button><button class="btn" data-act="trdnew">+ Operazione</button><button class="btn" data-act="posnew">+ Titolo</button><button class="btn primary" data-act="invupd">Aggiorna ora</button></div></div>`;
   if(!rows.length) return h+`<div class="card empty">Nessun titolo. Importa l'<b>Estratto del patrimonio</b> di Trade Republic (PDF) oppure aggiungi un titolo a mano.<br><br><button class="btn primary" data-act="invimp">Importa estratto Trade Republic</button></div></div>`;
   h+=`<div class="grid kpis">${kpi('Valore attuale',eur(t.value),`${t.n} titoli`)}
-    ${kpi('Investito',t.cost?eur(t.cost):'—',t.missingAvg?`manca il prezzo medio di ${t.missingAvg} ${t.missingAvg===1?'titolo':'titoli'}`:'somma dei prezzi medi di acquisto')}
+    ${kpi('Investito',t.cost?eur(t.cost):'—',t.missingAvg?`manca il costo di ${t.missingAvg} ${t.missingAvg===1?'voce':'voci'}`:'somma dei prezzi medi di acquisto')}
     ${kpi('Guadagno / perdita',t.pl!=null?`${t.pl>=0?'+':''}${eur(t.pl)}`:'—',(t.pl!=null&&t.cost?pct(t.pl/t.cost*100)+(t.missingAvg?' (sui titoli con prezzo medio)':''):'inserisci i prezzi medi di acquisto')+(t.realized||t.divs?`<br>realizzato ${eur(t.realized)} · dividendi ${eur(t.divs)}`:''),t.pl==null?'':t.pl>=0?'pos':'neg')}
     ${kpi('Oggi',`${t.day>=0?'+':''}${eur(t.day)}`,'variazione dalla chiusura precedente',t.day>=0?'pos':'neg')}</div>`;
   // ripartizione per tipo
@@ -1020,7 +1020,11 @@ function viewInv(){
     <div class="legend" style="margin-top:8px">${Object.entries(byKind).map(([k,v])=>`<span><i style="background:${INV_COLOR[k]||'#9ca3af'}"></i>${INV_KIND[k]||k} ${Math.round(v/t.value*100)}% · ${eur(v)}</span>`).join('')}</div></div>`;
   // titoli
   h+=`<div class="card" style="padding:0"><div class="tblwrap" style="border:0"><table><thead><tr><th>Titolo</th><th class="num">Quantità</th><th class="num">Prezzo</th><th class="num">Valore</th><th class="num">Prezzo medio</th><th class="num">Guadagno</th><th class="num">Peso</th></tr></thead><tbody>
-  ${rows.map(x=>`<tr class="clk" data-act="posedit" data-id="${esc(x.p.id)}"><td><b>${esc(x.p.name)}</b><div class="small muted">${esc(INV_KIND[x.p.kind]||'')} · ${esc(x.p.isin||x.p.cgId)}${(b=>b.length?' · '+esc(b.join(' + ')):'')(posStats(x.p.id).brokers)}${x.m.err?' · <span class="neg" title="'+esc(x.m.err)+'">prezzo non aggiornato</span>':''}${!x.live?' · prezzo dell\'estratto':''}</div></td>
+  ${rows.map(x=>x.p.kind==='gestita'?`<tr class="clk" data-act="posedit" data-id="${esc(x.p.id)}"><td><b>${esc(x.p.name)}</b><div class="small muted">${esc(INV_KIND.gestita)}${x.p.broker?' · '+esc(x.p.broker):''} · valore al ${fmtDate(x.p.refDate)}</div></td>
+    <td class="num muted">—</td><td class="num muted">—</td><td class="num"><b>${x.value!=null?eur(x.value):'—'}</b></td>
+    <td class="num">${x.p.avg!=null?`<span class="small muted">versato</span> ${eur(x.p.avg)}`:'<span class="muted">versato: facoltativo</span>'}</td>
+    <td class="num">${x.pl!=null?`<span class="${x.pl>=0?'pos':'neg'}">${x.pl>=0?'+':''}${eur(x.pl)}<div class="small">${pct(x.plPct)}</div></span>`:'—'}</td>
+    <td class="num muted">${x.value!=null&&t.value?Math.round(x.value/t.value*100)+'%':''}</td></tr>`:`<tr class="clk" data-act="posedit" data-id="${esc(x.p.id)}"><td><b>${esc(x.p.name)}</b><div class="small muted">${esc(INV_KIND[x.p.kind]||'')} · ${esc(x.p.isin||x.p.cgId)}${(b=>b.length?' · '+esc(b.join(' + ')):'')(posStats(x.p.id).brokers)}${x.m.err?' · <span class="neg" title="'+esc(x.m.err)+'">prezzo non aggiornato</span>':''}${!x.live?' · prezzo dell\'estratto':''}</div></td>
     <td class="num">${qtyFmt(x.p.qty)}</td>
     <td class="num">${x.price!=null?eur(x.price):'—'}${x.m.changePct!=null?`<div class="small ${x.m.changePct>=0?'pos':'neg'}">${pct(x.m.changePct)}</div>`:''}</td>
     <td class="num"><b>${x.value!=null?eur(x.value):'—'}</b></td>
@@ -1039,7 +1043,7 @@ function viewInv(){
   <p class="small muted" style="margin:8px 0 0">Quantità e prezzo medio di ogni titolo si calcolano da queste operazioni. Per aggiungerne una importa la conferma d'esecuzione di Trade Republic oppure usa <i>+ Operazione</i>.</p>`
   :`<div class="empty">Nessuna operazione registrata.</div>`}</div>`;
   // notizie
-  const news=rows.flatMap(x=>(x.m.news||[]).map(n=>({...n,who:x.p.name}))).filter(n=>n.title).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  const news=rows.filter(x=>x.p.kind!=='gestita').flatMap(x=>(x.m.news||[]).map(n=>({...n,who:x.p.name}))).filter(n=>n.title).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
   const seen=new Set(),uniq=news.filter(n=>{const k=n.title.toLowerCase();if(seen.has(k)) return false;seen.add(k);return true}).slice(0,30);
   h+=`<div class="card"><h2>Notizie sui vostri titoli</h2>${uniq.length?`<div class="upc">${uniq.map(n=>`<div class="u" style="grid-template-columns:62px 1fr"><span class="small muted">${n.date?fmtShort(n.date.slice(0,10)):''}</span><span><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a><div class="small muted">${esc(n.source||'')} · <span class="chip">${esc(n.who)}</span></div></span></div>`).join('')}</div>`
     :`<div class="empty">Le notizie arrivano al prossimo aggiornamento.</div>`}</div>`;
@@ -1047,9 +1051,9 @@ function viewInv(){
 }
 function drawInvChart(){
   const el=$('#invChart');if(!el) return;
-  const rows=invRows(),dates=[...new Set(rows.flatMap(x=>Object.keys(x.m.history||{})))].sort();
+  const rows=invRows(),hOf=x=>x.p.kind==='gestita'?x.p.values||{}:x.m.history||{},dates=[...new Set(rows.flatMap(x=>Object.keys(hOf(x))))].sort();
   if(dates.length<2){el.innerHTML=`<div class="empty">Il grafico compare dopo almeno due giorni di prezzi salvati.</div>`;return}
-  const series=dates.map(d=>{let v=0;for(const x of rows){const hst=x.m.history||{};const ks=Object.keys(hst).filter(k=>k<=d).sort();const pr=ks.length?hst[ks[ks.length-1]]:(x.p.refPrice??null);if(pr!=null) v+=x.p.qty*pr}return [d,round2(v)]});
+  const series=dates.map(d=>{let v=0;for(const x of rows){const hst=hOf(x);const ks=Object.keys(hst).filter(k=>k<=d).sort();const pr=ks.length?hst[ks[ks.length-1]]:(x.p.refPrice??null);if(pr!=null) v+=x.p.qty*pr}return [d,round2(v)]});
   const W=Math.max(300,el.clientWidth),H=200,L=58,R=10,T=10,B=24,vals=series.map(s=>s[1]),mn=Math.min(...vals),mx=Math.max(...vals),pad=(mx-mn)*0.1||mx*0.02||1;
   const lo=mn-pad,hi=mx+pad,X=i=>L+(W-L-R)*i/(series.length-1),Y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo));
   const pts=series.map((s,i)=>`${X(i).toFixed(1)},${Y(s[1]).toFixed(1)}`).join(' ');
@@ -1125,10 +1129,15 @@ const enNum=s=>{const n=parseFloat(String(s).replace(/[^\d.\-]/g,''));return isF
 const enDate=(d,mo,y)=>EN_MON[mo]?`${y}-${EN_MON[mo]}-${d.padStart(2,'0')}`:'';
 const curOf=s=>/US\$/.test(s)?'USD':/€/.test(s)?'EUR':/£/.test(s)?'GBP':'';
 function parseRevolut(lines){
-  const r={broker:'Revolut',date:'',positions:[],trades:[],totals:{},sums:{}};let m,sec='';
+  const r={broker:'Revolut',date:'',positions:[],trades:[],totals:{},sums:{},cash:{},grand:{},start:{},flows:[]};let m,sec='';
   for(const l of lines){
     if(!r.date&&(m=l.match(/Period\s+\d{1,2} \w{3} \d{4}\s*-\s*(\d{1,2}) (\w{3}) (\d{4})/))) r.date=enDate(m[1],m[2],m[3]);
-    if((m=l.match(/^(USD|EUR|GBP) Portfolio breakdown/))) sec=m[1];
+    if((m=l.match(/^(USD|EUR|GBP) (?:Portfolio breakdown|Account summary)/))) sec=m[1];
+    if(sec&&(m=l.match(/^Total\s+(US\$|€|£)\s?([\d.,]+)\s+(?:US\$|€|£)\s?([\d.,]+)$/))){r.start[curOf(m[1])]=enNum(m[2]);continue}
+    if(sec&&(m=l.match(/^Total\s+(US\$|€|£)\s?([\d.,]+)$/))){r.grand[curOf(m[1])]=enNum(m[2]);continue}
+    if(sec&&(m=l.match(/^Cash value\s+(US\$|€|£)\s?([\d.,]+)\s+[\d.]+%$/))){r.cash[curOf(m[1])]=enNum(m[2]);continue}
+    if((m=l.match(/^(\d{1,2}) (\w{3}) (\d{4}) (\d{2}:\d{2}:\d{2}) GMT\s+(?:Cash )?(top-up|withdrawal)\s+(US\$|€|£)\s?([\d.,]+)/i))){
+      r.flows.push({date:enDate(m[1],m[2],m[3]),type:/top/i.test(m[5])?'in':'out',currency:curOf(m[6]),amount:enNum(m[7])});continue}
     if((m=l.match(/^([A-Z0-9.\-]{1,12})\s+(.+?)\s+([A-Z]{2}[A-Z0-9]{9}\d)\s+([\d.,]+)\s+(US\$|€|£)\s?([\d.,]+)\s+(?:US\$|€|£)\s?([\d.,]+)\s+[\d.]+%$/))){
       r.positions.push({symbol:m[1],name:m[2].trim(),isin:m[3],qty:enNum(m[4]),price:enNum(m[6]),value:enNum(m[7]),currency:curOf(m[5])});continue}
     if(sec&&(m=l.match(/^Positions Value\s+(US\$|€|£)\s?([\d.,]+)\s+[\d.]+%$/))) r.totals[curOf(m[1])]=enNum(m[2]);
@@ -1164,10 +1173,12 @@ async function importTRFiles(files){
       if(!r.positions.length&&!r.trades.length){await notice(`In ${f.name} non ho trovato titoli né operazioni.`,'Estratto Revolut');continue}
       try{
         const curs=[...new Set([...r.positions.map(x=>x.currency),...r.trades.map(t=>t.currency)])].filter(c=>c&&c!=='EUR');
-        const fxEnd={};for(const c of curs) fxEnd[c]=await fxRate(c,r.date);
+        const fxEnd={};for(const c of curs) fxEnd[c]=await fxRate(c,r.date);r.fxEnd=fxEnd;
         for(const x of r.positions){x.fx=fxEnd[x.currency]||1;x.priceEur=round2(x.price*x.fx*1e4)/1e4}
         for(const t of r.trades) t.fx=await fxRate(t.currency,t.date);
       }catch(e){await notice('Non riesco a leggere il cambio BCE: '+e.message+'. Riprova con la connessione attiva.','Cambio non disponibile');continue}
+      const g=managedFor(r),fresh=r.positions.length&&!r.positions.some(x=>(S.trades||[]).some(t=>t.pos===x.isin&&(t.broker||'').startsWith('Revolut')));
+      if(g||(fresh&&await askRevolutMode(r)==='gestita')){await importManaged(r,g);continue}
       let acc=suggestAccount(r),first=false;
       if(r.positions.length){const res=await importHoldings(r);if(!res) continue;acc=res.acc;first=res.first}
       trades.push(...r.trades.map(t=>({...t,broker:acc,file:f.name,...(first?{coveredUntil:r.date}:{})})));continue}
@@ -1238,7 +1249,73 @@ async function importHoldings(r){
     result={acc,first};
   });let result=null;dlg.addEventListener('close',()=>res(result),{once:true})});
 }
+/* gestione patrimoniale / robo-advisor: una sola voce con il valore complessivo, senza i singoli titoli.
+   qty=1, refPrice=valore, avg=versato (facoltativo), values={data:valore}, isins=titoli dell'ultimo estratto (per riconoscerla) */
+function managedFor(r){
+  const isins=r.positions.map(x=>x.isin);if(!isins.length) return null;
+  return (S.positions||[]).find(p=>p.kind==='gestita'&&!p.archived&&(p.isins||[]).length&&isins.filter(i=>p.isins.includes(i)).length*2>=isins.length)||null;
+}
+function managedValue(r){ // valore in euro alla fine del periodo: titoli + liquidità, e i versamenti del periodo
+  const fx=c=>c==='EUR'?1:(r.fxEnd||{})[c]||(r.positions.find(x=>x.currency===c)?.fx)||0;
+  const curs=[...new Set(r.positions.map(x=>x.currency))];let pos=0,cash=0,value=0;
+  for(const c of curs){const pv=r.sums[c]||0,cv=r.cash[c]||0;pos+=pv*fx(c);cash+=cv*fx(c);value+=(r.grand[c]??round2(pv+cv))*fx(c)}
+  const fl=r.flows.filter(f=>curs.includes(f.currency));
+  return {value:round2(value),positions:round2(pos),cash:round2(cash),in:round2(fl.filter(f=>f.type==='in').reduce((a,f)=>a+f.amount*fx(f.currency),0)),
+    out:round2(fl.filter(f=>f.type==='out').reduce((a,f)=>a+f.amount*fx(f.currency),0)),flows:fl};
+}
+function askRevolutMode(r){
+  return new Promise(res=>{let v=null;openDlg(`<form><div class="dlg-h"><h3>Estratto Revolut al ${fmtDate(r.date)}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  <div style="padding:12px 16px;display:grid;gap:10px"><p style="margin:0">Ho trovato ${r.positions.length} titoli. Come li registro?</p>
+    <label class="row" style="align-items:flex-start;gap:8px"><input type="radio" name="mode" value="titoli" ${r.positions.length<4?'checked':''}><span><b>Titolo per titolo</b><div class="small muted">Titoli che compri tu: quantità, prezzo medio e operazioni di ognuno.</div></span></label>
+    <label class="row" style="align-items:flex-start;gap:8px"><input type="radio" name="mode" value="gestita" ${r.positions.length>=4?'checked':''}><span><b>Una sola voce: gestione automatica (robo-advisor)</b><div class="small muted">Vedi solo il valore complessivo. I titoli li sceglie Revolut e non servono i prezzi medi.</div></span></label></div>
+  <div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Avanti</button></div></form>`,
+  fd=>{v=fd.get('mode')});dlg.addEventListener('close',()=>res(v),{once:true})});
+}
+function importManaged(r,g){
+  const mv=managedValue(r),later=g&&g.refDate&&g.refDate>r.date;
+  const newIn=g&&g.avg!=null?mv.flows.filter(f=>!g.paidAt||f.date>g.paidAt):[];
+  const paid=g&&g.avg!=null?round2(g.avg+newIn.filter(f=>f.type==='in').reduce((a,f)=>a+f.amount,0)-newIn.filter(f=>f.type==='out').reduce((a,f)=>a+f.amount,0)):null;
+  const n=v=>v==null?'':String(v).replace('.',',');
+  return new Promise(res=>{openDlg(`<form><div class="dlg-h"><h3>${esc(g?.name||'Gestione Revolut')}: valore al ${fmtDate(r.date)}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  <div style="padding:12px 16px;display:grid;gap:10px">
+    <div class="banner ${r.ok?'ok':''}"><div>${r.ok?'✔':'⚠'} Valore complessivo <b>${eur(mv.value)}</b>: ${r.positions.length} titoli per ${eur(mv.positions)} + liquidità ${eur(mv.cash)}${r.ok?'. I conti tornano con il documento.':'. La somma dei titoli non coincide con il totale del documento: controlla.'}</div></div>
+    ${mv.in||mv.out?`<div class="small">Nel periodo: versati <b>${eur(mv.in)}</b>${mv.out?`, prelevati <b>${eur(mv.out)}</b>`:''}.</div>`:''}
+    ${later?`<div class="small muted">C'è già un valore più recente (${fmtDate(g.refDate)}): questo entra solo nello storico.</div>`:''}
+    <label class="lab">Nome<input name="name" value="${esc(g?.name||'Revolut Robo-Advisor')}" required></label>
+    <label class="lab">Versato in totale finora (€, facoltativo: serve per il guadagno)<input name="paid" inputmode="decimal" value="${n(paid??g?.avg)}" placeholder="dall'app Revolut, sezione del robo-advisor"></label>
+    <p class="small muted" style="margin:0">I singoli titoli e le operazioni fatte dal robo-advisor non vengono registrati.${g&&g.avg!=null&&newIn.length?' Al versato ho aggiunto i movimenti del periodo successivi al '+fmtDate(g.paidAt)+'.':''}</p>
+  </div><div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Conferma</button></div></form>`,
+  fd=>{
+    const raw=String(fd.get('paid')||'').trim(),pv=raw?parseNum(raw):null;if(raw&&(pv==null||pv<0)){toast('Versato non valido');return false}
+    const id=g?.id||'GEST-'+uid(),values={...(g?.values||{}),[r.date]:mv.value};
+    const np={...(g||{}),id,isin:'',name:String(fd.get('name')).trim(),kind:'gestita',qty:1,avg:pv,refPrice:later?g.refPrice:mv.value,refDate:later?g.refDate:r.date,
+      broker:'Revolut',newsQuery:'',cgId:'',archived:false,values,isins:later?(g.isins||[]):r.positions.map(x=>x.isin),paidAt:pv==null?'':(later?g.paidAt:r.date)};
+    S.positions=[...(S.positions||[]).filter(p=>p.id!==id),np];save();toast('Gestione aggiornata');res(true);
+  });dlg.addEventListener('close',()=>res(false),{once:true})});
+}
+function openManaged(id){
+  const p=id?(S.positions||[]).find(x=>x.id===id):{id:'',name:'',kind:'gestita',broker:'',avg:null,refPrice:null,refDate:today(),values:{}};if(!p) return;
+  const n=v=>v==null?'':String(v).replace('.',','),hist=Object.entries(p.values||{}).sort().reverse().slice(0,8);
+  openDlg(`<form><div class="dlg-h"><h3>${id?esc(p.name):'Nuova gestione / robo-advisor'}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  <div class="form">
+    <label class="full">Nome<input id="gsName" name="name" required value="${esc(p.name)}" placeholder="es. Revolut Robo-Advisor"></label>
+    <label>Valore attuale (€)<input id="gsVal" name="value" inputmode="decimal" required value="${n(p.refPrice)}"></label>
+    <label>Al giorno<input id="gsDate" type="date" name="date" required value="${today()}"></label>
+    <label>Versato in totale (€)<input id="gsPaid" name="paid" inputmode="decimal" value="${n(p.avg)}" placeholder="facoltativo"></label>
+    <label>Broker<input id="gsBroker" name="broker" value="${esc(p.broker||'')}" placeholder="es. Revolut"></label>
+    ${hist.length?`<div class="full small muted">Valori registrati: ${hist.map(([d,v])=>fmtShort(d)+' '+eur(v)).join(' · ')}</div>`:''}
+    <div class="full small muted">Una gestione conta come una sola voce: si aggiorna importando l'estratto del broker o scrivendo qui il valore. Il guadagno è valore meno versato.</div>
+  </div><div class="dlg-f">${id?`<button type="button" class="btn danger" data-act="posdel" data-id="${esc(id)}" style="margin-right:auto">Elimina</button>`:''}<button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
+  fd=>{
+    const v=parseNum(fd.get('value')),date=fd.get('date'),raw=String(fd.get('paid')||'').trim(),pv=raw?parseNum(raw):null;
+    if(v==null||v<0){toast('Valore non valido');return false}if(raw&&(pv==null||pv<0)){toast('Versato non valido');return false}
+    const values={...(p.values||{}),[date]:round2(v)},last=Object.keys(values).sort().pop();
+    const np={...p,id:id||'GEST-'+uid(),isin:'',name:fd.get('name').trim(),kind:'gestita',qty:1,avg:pv,refPrice:values[last],refDate:last,broker:fd.get('broker').trim(),newsQuery:'',cgId:'',archived:false,values,isins:p.isins||[],paidAt:pv==null?'':pv===p.avg?(p.paidAt||date):date};
+    S.positions=[...(S.positions||[]).filter(x=>x.id!==np.id),np];save();toast(id?'Gestione aggiornata':'Gestione aggiunta');
+  });
+}
 function openPos(id){
+  if(id&&(S.positions||[]).find(x=>x.id===id)?.kind==='gestita') return openManaged(id);
   const p=id?(S.positions||[]).find(x=>x.id===id):{id:'',isin:'',name:'',kind:'azione',qty:'',avg:null,newsQuery:'',cgId:''};if(!p) return;
   const m=mkt(p.id),hist=Object.entries(m.history||{}).sort().slice(-5).reverse(),st=id?posStats(id):null,ops=id?tradesOf(id):[];
   const fromOps=!!(st&&st.n),byBroker=fromOps?st.brokers.map(b=>({b,s:posStats(id,b)})).filter(x=>x.s.qty>0):[];
@@ -1246,7 +1323,7 @@ function openPos(id){
   <div class="form">
     <label class="full">Nome<input id="psName" name="name" required value="${esc(p.name)}"></label>
     <label>ISIN${id?'':' (es. IE00B4L5Y983)'}<input id="psIsin" name="isin" value="${esc(p.isin)}" ${id?'readonly':''} placeholder="12 caratteri"></label>
-    <label>Tipo<select id="psKind" name="kind">${Object.entries(INV_KIND).map(([k,l])=>`<option value="${k}" ${p.kind===k?'selected':''}>${l}</option>`).join('')}</select></label>
+    <label>Tipo<select id="psKind" name="kind">${Object.entries(INV_KIND).filter(([k])=>!id||k!=='gestita').map(([k,l])=>`<option value="${k}" ${p.kind===k?'selected':''}>${l}</option>`).join('')}</select></label>
     ${fromOps?`<div class="full small" style="display:grid;gap:2px"><div>Quantità <b>${qtyFmt(st.qty)}</b> · prezzo medio <b>${st.avg!=null?eur(st.avg):'—'}</b> <span class="muted">(calcolati da ${st.n} operazioni)</span></div>
         ${byBroker.length>1?`<div class="muted">${byBroker.map(x=>`${esc(x.b)} ${qtyFmt(x.s.qty)}`).join(' · ')}</div>`:''}
         ${st.realized||st.divs?`<div>Guadagno realizzato <b>${eur(st.realized||0)}</b> · dividendi <b>${eur(st.divs)}</b></div>`:''}</div>
@@ -1278,6 +1355,7 @@ function openPos(id){
     S.positions=[...(S.positions||[]).filter(x=>x.id!==nid),{...p,id:nid,isin,name,kind,cgId,newsQuery:fd.get('newsQuery').trim()||defaultNewsQuery(name,kind),archived:false}];
     syncPositions();save();toast(id?'Titolo aggiornato':'Titolo aggiunto');if(!id) setTimeout(()=>refreshMarket(false),300);
   });
+  if(!id){const k=dlg.querySelector('#psKind');k.onchange=()=>{if(k.value==='gestita'){dlg.close();openManaged(null)}}}
 }
 function openTrade(id,preset={}){
   const t=id?(S.trades||[]).find(x=>x.id===id):{id:'',pos:preset.pos||'',date:today(),type:'buy',qty:'',price:null,amount:null,fees:0,taxes:0,note:'',broker:'Trade Republic',currency:'EUR',fx:1};if(!t) return;
