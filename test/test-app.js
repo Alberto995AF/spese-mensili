@@ -25,7 +25,7 @@ function loadPage(file) {
     confirm: () => true, alert() {}, location: { protocol: 'file:', origin: '', pathname: '/' }, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v } } };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut};', ctx);
+  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount};', ctx);
   return ctx.__t;
 }
 
@@ -217,7 +217,9 @@ const CASES = [
   }],
   ['notizie: ricerca proposta dal nome del titolo', t =>
     t.defaultNewsQuery('Example Corp.', 'azione') === 'Example azioni' && t.defaultNewsQuery('Esempio S.p.A.', 'azione') === 'Esempio azioni'
-      && t.defaultNewsQuery('Core MSCI World USD (Acc)', 'etf') === 'MSCI World'],
+      && t.defaultNewsQuery('Core MSCI World USD (Acc)', 'etf') === 'MSCI World'
+      && t.defaultNewsQuery('Invesco US Treasury Bond 7-10 Year EUR-hedged Dist ETF', 'etf') === 'US Treasury Bond 7-10 Year'
+      && t.defaultNewsQuery('Amundi USD Emerging Markets Government Bond UCITS ETF EUR Hedged (Dist)', 'etf') === 'Emerging Markets Government Bond'],
   // ---------- registro delle operazioni (numeri inventati) ----------
   ['conferma d\'esecuzione: piano d\'accumulo letto come acquisto (anche col piè di pagina sulle "vendite")', t => {
     const r = t.parseTRTrade(['DATA 10.03.2026', 'ESECUZIONE ab12-cd34', 'PIANO DI ACCUMULO 1111-2222',
@@ -281,6 +283,25 @@ const CASES = [
     return t.posStats('X').qty === 1.5 && t.posStats('X', 'Revolut').qty === 0.5 && t.posStats('X', 'Trade Republic').avg === 400
       && t.tradeStatus({ ...x, broker: 'Revolut', date: '2026-01-04' }).key === 'before'
       && t.tradeStatus({ ...x, broker: 'Trade Republic', date: '2026-01-04' }).key === 'new';
+  }],
+  ['Revolut in euro: titoli, vendite e titoli già venduti riconosciuti', t => {
+    t.S.positions = []; t.S.trades = [];
+    const r = t.parseRevolut(['Period 01 Mar 2026 - 31 Mar 2026', 'EUR Portfolio breakdown',
+      'ABCD Example World UCITS ETF (Acc) IE0000000002 2.5 €40.00 €100.00 100%', 'Positions Value €100.00 100%',
+      '02 Mar 2026 12:00:01 GMT ABCD Trade - Market 0.5 €40.00 Buy €20.00 €0 €0',
+      '10 Mar 2026 10:00:02 GMT GONE Trade - Market 1.25 €8.00 Sell €10.00 €0 €0']);
+    const gone = r.trades.find(x => x.symbol === 'GONE');
+    return r.ok && r.positions[0].currency === 'EUR' && r.trades.length === 2 && gone.type === 'sell' && !gone.isin
+      && t.tradeStatus({ ...gone, broker: 'Revolut', coveredUntil: r.date }).key === 'before'
+      && t.tradeStatus({ ...gone, broker: 'Revolut' }).key === 'bad';
+  }],
+  ['due conti Revolut con lo stesso numero restano separati', t => {
+    t.S.trades = [{ id: 'a', pos: 'US0000000003', date: '2026-03-31', type: 'open', qty: 1, price: null, broker: 'Revolut', currency: 'USD', fx: 0.9 }];
+    const usd = { broker: 'Revolut', positions: [{ isin: 'US0000000003' }] }, eurAcc = { broker: 'Revolut', positions: [{ isin: 'IE0000000002' }] };
+    t.S.trades.push({ id: 'b', pos: 'IE0000000002', date: '2026-03-31', type: 'open', qty: 2, price: null, broker: 'Revolut 2', currency: 'EUR', fx: 1 });
+    return t.suggestAccount(usd) === 'Revolut' && t.suggestAccount(eurAcc) === 'Revolut 2'
+      && t.suggestAccount({ broker: 'Revolut', positions: [{ isin: 'XX0000000009' }] }) === 'Revolut 3'
+      && t.suggestAccount({ broker: 'Trade Republic', positions: [] }) === 'Trade Republic';
   }],
 ];
 

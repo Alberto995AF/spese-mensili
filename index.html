@@ -1074,7 +1074,7 @@ function maybeRefreshMarket(){const at=mkt('_stato').at;if((S.positions||[]).som
 /* nome di ricerca per le notizie: "NVIDIA Corp." → "NVIDIA azioni", "Core MSCI World USD (Acc)" → "MSCI World" */
 function defaultNewsQuery(name,kind){
   const n=String(name||'');
-  if(kind==='etf') return n.replace(/\((acc|dist)\)|\b(USD|EUR|GBP|CHF|UCITS|ETF|Core|iShares|Xtrackers|Vanguard|Amundi|SPDR)\b/gi,' ').replace(/\s+/g,' ').trim();
+  if(kind==='etf') return n.replace(/\b(?:EUR|USD|GBP|CHF)?[- ]?hedged\b/gi,' ').replace(/\((acc|dist)\)|\b(USD|EUR|GBP|CHF|UCITS|ETF|Core|iShares|Xtrackers|Vanguard|Amundi|SPDR|Invesco|UBS|Lyxor|Acc|Dist|DR|II)\b/gi,' ').replace(/\s+/g,' ').trim();
   return (n.replace(/\b(Corp\.?|Corporation|Inc\.?|S\.p\.A\.?|SpA|AG|N\.V\.|SE|plc|Ltd\.?|Co\.)\s*$/i,'').trim()+' azioni').trim();
 }
 const guessKind=name=>/\((acc|dist)\)|\betf\b|ucits/i.test(name)?'etf':/\b(btp|bot|bond|obbligaz|treasury)\b/i.test(name)?'obbligazione':'azione';
@@ -1148,6 +1148,7 @@ function parseRevolut(lines){
 }
 /* che cosa succede a un'operazione importata: nuova, già presente o già compresa nella situazione iniziale di quel broker */
 function tradeStatus(x){
+  if(!x.isin&&x.coveredUntil&&x.date&&x.date<=x.coveredUntil) return {key:'before',label:`già compresa: titolo non più posseduto al ${fmtDate(x.coveredUntil)}`};
   if(!x.ok) return {key:'bad',label:'⚠ non riconosciuta: inseriscila a mano'};
   if(x.ref&&(S.trades||[]).some(t=>t.ref===x.ref)) return {key:'dup',label:'già importata'};
   const open=(S.trades||[]).find(t=>t.pos===x.isin&&t.type==='open'&&(t.broker||'')===(x.broker||''));
@@ -1167,8 +1168,9 @@ async function importTRFiles(files){
         for(const x of r.positions){x.fx=fxEnd[x.currency]||1;x.priceEur=round2(x.price*x.fx*1e4)/1e4}
         for(const t of r.trades) t.fx=await fxRate(t.currency,t.date);
       }catch(e){await notice('Non riesco a leggere il cambio BCE: '+e.message+'. Riprova con la connessione attiva.','Cambio non disponibile');continue}
-      if(r.positions.length) await importHoldings(r);
-      trades.push(...r.trades.map(t=>({...t,file:f.name})));continue}
+      let acc=suggestAccount(r),first=false;
+      if(r.positions.length){const res=await importHoldings(r);if(!res) continue;acc=res.acc;first=res.first}
+      trades.push(...r.trades.map(t=>({...t,broker:acc,file:f.name,...(first?{coveredUntil:r.date}:{})})));continue}
     if(lines.some(l=>/ESTRATTO DEL PATRIMONIO/i.test(l))){const r=parseTRHoldings(lines);r.broker='Trade Republic';r.positions.forEach(x=>{x.currency='EUR';x.fx=1;x.priceEur=x.price});await importHoldings(r);continue}
     trades.push({...parseTRTrade(lines),file:f.name});
   }
@@ -1194,9 +1196,18 @@ function showTradesDialog(trades){
     syncPositions();save();toast(`Registrate ${n} operazioni`);setTimeout(()=>refreshMarket(false),300);
   });
 }
-/* estratto del patrimonio (Trade Republic) o del conto titoli (Revolut): crea la situazione iniziale dei titoli nuovi e controlla gli altri */
+/* nome del conto: Revolut può avere più conti con lo stesso numero, ognuno va tenuto separato */
+function suggestAccount(r){
+  const base=r.broker||'Trade Republic';if(base==='Trade Republic') return base;
+  const labels=[...new Set((S.trades||[]).map(t=>t.broker||'').filter(b=>b===base||b.startsWith(base+' ')))];
+  let best='',score=0;for(const l of labels){const s=r.positions.filter(x=>tradesOf(x.isin,l).length).length;if(s>score){score=s;best=l}}
+  if(best) return best;if(!labels.length) return base;
+  let i=2;while(labels.includes(`${base} ${i}`)) i++;return `${base} ${i}`;
+}
+/* estratto del patrimonio (Trade Republic) o del conto titoli (Revolut): crea la situazione iniziale dei titoli nuovi e controlla gli altri.
+   Restituisce il nome del conto usato (o null se annullato) e se era la prima importazione di quel conto. */
 async function importHoldings(r){
-  const broker=r.broker||'Trade Republic';
+  const broker=suggestAccount(r),askName=(r.broker||'Trade Republic')!=='Trade Republic';
   if(!r.positions.length) return notice("Nel PDF non ho trovato titoli. Serve l'estratto con l'elenco dei titoli posseduti.",'Nessun titolo trovato');
   const lines=r.positions.map(x=>{const hasOps=tradesOf(x.isin,broker).length>0,st=hasOps?posStats(x.isin,broker):null;
     return {...x,hasOps,status:!hasOps?`situazione iniziale al ${fmtDate(r.date)}`:Math.abs(st.qty-x.qty)<1e-6?'✔ coincide con le operazioni':`⚠ le operazioni danno ${qtyFmt(st.qty)}, l'estratto ${qtyFmt(x.qty)}: manca un'operazione?`,warn:hasOps&&Math.abs(st.qty-x.qty)>=1e-6}});
@@ -1208,20 +1219,24 @@ async function importHoldings(r){
   return new Promise(res=>{openDlg(`<form><div class="dlg-h"><h3>${esc(broker)}: titoli al ${fmtDate(r.date)}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
   <div style="padding:12px 16px;display:grid;gap:10px">
     <div class="banner ${ok?'ok':''}"><div>${okMsg}</div></div>
+    ${askName?`<label class="lab">Nome del conto (per tenere separati i conti dello stesso broker)<input id="accLabel" name="acc" value="${esc(broker)}" list="accNames"></label>
+      <datalist id="accNames">${[...new Set((S.trades||[]).map(t=>t.broker).filter(Boolean))].map(b=>`<option value="${esc(b)}">`).join('')}</datalist>`:''}
     <div class="tblwrap"><table class="small"><thead><tr><th>Titolo</th><th class="num">Quantità</th><th class="num">Valore</th><th>Confronto</th></tr></thead><tbody>
     ${lines.map(x=>`<tr><td>${esc(x.name)}<div class="muted">${x.isin}</div></td><td class="num">${qtyFmt(x.qty)}</td><td class="num">${money(x.value,x.currency)}${x.currency!=='EUR'?`<div class="muted">${eur(x.value*x.fx)}</div>`:''}</td><td class="${x.warn?'neg':''}">${esc(x.status)}</td></tr>`).join('')}
     ${gone.map(p=>`<tr><td>${esc(p.name)}<div class="muted">${esc(p.isin)}</div></td><td class="num">0</td><td></td><td class="neg">⚠ non più presente: registra la vendita</td></tr>`).join('')}</tbody></table></div>
     <p class="small muted" style="margin:0">I titoli che presso ${esc(broker)} hanno già delle operazioni non vengono modificati: l'estratto serve da controllo. Per quelli nuovi registro la situazione iniziale con la quantità dell'estratto; il prezzo medio lo inserisci tu dalla scheda del titolo${cur!=='EUR'?', nella valuta del broker':''}.</p>
   </div><div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Conferma</button></div></form>`,
-  ()=>{
+  fd=>{
+    const acc=askName?(String(fd.get('acc')||'').trim()||broker):broker,first=!(S.trades||[]).some(t=>t.broker===acc);
     S.positions=[...(S.positions||[])];S.trades=[...(S.trades||[])];
-    for(const x of lines){const i=S.positions.findIndex(p=>p.id===x.isin),o=i>=0?S.positions[i]:null,kind=o?.kind||guessKind(x.name);
+    for(const x of lines){const i=S.positions.findIndex(p=>p.id===x.isin),o=i>=0?S.positions[i]:null,kind=o?.kind||guessKind(x.name);x.hasOps=tradesOf(x.isin,acc).length>0;
       const np={...(o||{}),id:x.isin,isin:x.isin,name:o?.name||x.name,kind,qty:o?.qty||0,avg:o?.avg??null,refPrice:x.priceEur??x.price,refDate:r.date,broker:o?.broker||broker,archived:false,newsQuery:o?.newsQuery||defaultNewsQuery(x.name,kind),...(x.symbol?{symbol:x.symbol}:{})};
       if(i>=0) S.positions[i]=np;else S.positions.push(np);
-      if(!x.hasOps) S.trades.push({id:uid(),pos:x.isin,date:r.date,type:'open',qty:x.qty,price:null,amount:null,fees:0,taxes:0,src:broker==='Trade Republic'?'Estratto del patrimonio':'Estratto '+broker,ref:'',broker,currency:x.currency||'EUR',fx:x.fx||1});
+      if(!x.hasOps) S.trades.push({id:uid(),pos:x.isin,date:r.date,type:'open',qty:x.qty,price:null,amount:null,fees:0,taxes:0,src:acc==='Trade Republic'?'Estratto del patrimonio':'Estratto '+acc,ref:'',broker:acc,currency:x.currency||'EUR',fx:x.fx||1});
     }
     syncPositions();save();toast('Portafoglio aggiornato');setTimeout(()=>refreshMarket(false),300);
-  });dlg.addEventListener('close',()=>res(),{once:true})});
+    result={acc,first};
+  });let result=null;dlg.addEventListener('close',()=>res(result),{once:true})});
 }
 function openPos(id){
   const p=id?(S.positions||[]).find(x=>x.id===id):{id:'',isin:'',name:'',kind:'azione',qty:'',avg:null,newsQuery:'',cgId:''};if(!p) return;
@@ -1274,7 +1289,7 @@ function openTrade(id,preset={}){
     <label>Tipo<select id="trType" name="type">${Object.entries(TRD_TYPE).filter(([k])=>k!=='open'||t.type==='open').map(([k,l])=>`<option value="${k}" ${t.type===k?'selected':''}>${l}</option>`).join('')}</select></label>
     <label>Data<input id="trDate" type="date" name="date" required value="${t.date}"></label>
     <label class="full">Titolo<select id="trPos" name="pos">${pos.map(p=>`<option value="${esc(p.id)}" ${p.id===t.pos?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label>
-    <label>Broker<select id="trBroker" name="broker">${[...new Set([...BROKERS,t.broker||''])].filter(Boolean).map(b=>`<option ${b===t.broker?'selected':''}>${esc(b)}</option>`).join('')}</select></label>
+    <label>Broker o conto<select id="trBroker" name="broker">${[...new Set([...BROKERS,...(S.trades||[]).map(x=>x.broker||''),t.broker||''])].filter(Boolean).map(b=>`<option ${b===t.broker?'selected':''}>${esc(b)}</option>`).join('')}</select></label>
     <label>Valuta<select id="trCur" name="currency">${['EUR','USD','GBP','CHF'].map(c=>`<option ${c===(t.currency||'EUR')?'selected':''}>${c}</option>`).join('')}</select></label>
     <label>Quantità<input id="trQty" name="qty" inputmode="decimal" value="${n(t.qty)}"></label>
     <label>Prezzo per quota<input id="trPrice" name="price" inputmode="decimal" value="${n(t.price)}"></label>
