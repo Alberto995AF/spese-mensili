@@ -7,6 +7,7 @@ Si installa sulla schermata Home come un'app (PWA), come Cantina.
 
 - **Riepilogo**: entrate, uscite e saldo del mese e dell'anno, anche previsti (dalle voci ricorrenti), andamento annuale, spese per categoria, **dove avete speso** (per esercente) e **spese per carta e conto**.
 - **Importa estratti**: CSV, Excel e PDF (estratti Nexi compresi). Riconosce carta e titolare, propone le categorie e fa la **riconciliazione** con i totali del documento. Le spese della carta contano nel mese dell'estratto.
+- **Categorie e conti**: categorie con colore, parole chiave e tipo (uscita, entrata, esclusa dai totali); eliminandone una i movimenti si spostano in un'altra. Conti e carte si rinominano o si uniscono, con il titolare: gli estratti importati dopo col nome vecchio finiscono sul nome nuovo.
 - **Ricorrenti**: stipendio, affitto, bollette… con le previsioni dei mesi futuri.
 - **Salvadanai**: soldi messi da parte, con obiettivo e versamenti ricorrenti. Non contano come spesa.
 - **Dati**: backup JSON, esportazione CSV per Excel.

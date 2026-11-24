@@ -229,13 +229,14 @@ const DEFAULT_CATS=[
 ];
 const defaultCats=()=>DEFAULT_CATS.map(([name,kind,color,keywords],i)=>({id:'k'+i,name,kind,color,keywords}));
 function defaultState(){
-  return {v:1,catVer:2,categories:defaultCats(),movements:[],recurring:[],learn:{},imports:[],holders:{},jars:[],positions:[],trades:[]};
+  return {v:1,catVer:2,categories:defaultCats(),movements:[],recurring:[],learn:{},imports:[],holders:{},accAlias:{},jars:[],positions:[],trades:[]};
 }
 function normalize(d){
   const s=Object.assign(defaultState(),d||{});
   for(const k of ['categories','movements','recurring','imports']) if(!Array.isArray(s[k])) s[k]=[];
   if(!s.learn||typeof s.learn!=='object') s.learn={};
   if(!s.holders||typeof s.holders!=='object') s.holders={};
+  if(!s.accAlias||typeof s.accAlias!=='object') s.accAlias={};
   if(!Array.isArray(s.jars)) s.jars=[];
   if(!Array.isArray(s.positions)) s.positions=[];
   if(!Array.isArray(s.trades)) s.trades=[];
@@ -255,12 +256,12 @@ let rev=0;
 
 /* ============ dati su Supabase ============
    Tabella items (kind, id, data):  mov = un movimento · rec = una ricorrente · imp = un'importazione
-   cfg = configurazione: categories {list}, learn {map}, cards {holders}, jars {list}.
+   cfg = configurazione: categories {list}, learn {map}, cards {holders, alias}, jars {list}.
    Leggono e scrivono solo gli account con l'email nella tabella members (regole nel database). */
 const CFG=window.SPESE_CONFIG||{};
 const DB={sb:null,user:null,state:'loading',ready:false,ro:false,pending:0,dirty:false,needReload:false,err:'',
   remote:null,base:{mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),trd:new Map(),cats:'',learn:'{}',holders:'{}',jars:'[]'},q:Promise.resolve()};
-function resetRemote(){DB.remote={mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),trd:new Map(),mkt:new Map(),cats:null,learn:null,holders:null,jars:null}}
+function resetRemote(){DB.remote={mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),trd:new Map(),mkt:new Map(),cats:null,learn:null,holders:null,alias:null,jars:null}}
 resetRemote();
 const normMov=m=>({id:m.id,date:m.date,desc:m.desc||'',amount:round2(+m.amount||0),type:m.type==='entrata'?'entrata':'uscita',cat:m.cat||'',account:m.account||'',note:m.note||'',recId:m.recId||'',occ:m.occ||'',imp:m.imp||'',mese:m.mese||''});
 const normPos=p=>({id:p.id,isin:p.isin||'',name:p.name||'',kind:p.kind||'azione',qty:+p.qty||0,avg:p.avg==null||p.avg===''?null:+p.avg,refPrice:p.refPrice==null?null:+p.refPrice,refDate:p.refDate||'',newsQuery:p.newsQuery||'',cgId:p.cgId||'',broker:p.broker||'',archived:!!p.archived,...(p.symbol?{symbol:p.symbol}:{}),...(p.kind==='gestita'?{values:p.values||{},isins:p.isins||[],paidAt:p.paidAt||''}:{})});
@@ -272,7 +273,7 @@ function setRemote(kind,id,data){
   if(kind!=='cfg') return;
   if(id==='categories') R.cats=data||null;
   else if(id==='learn') R.learn=data?{...(data.map||{})}:null;
-  else if(id==='cards') R.holders=data?{...(data.holders||{})}:null;
+  else if(id==='cards'){R.holders=data?{...(data.holders||{})}:null;R.alias=data?{...(data.alias||{})}:null}
   else if(id==='jars') R.jars=data?(data.list||[]).map(x=>({...x})):null;
 }
 function applyRemote(){
@@ -282,7 +283,7 @@ function applyRemote(){
   S.imports=[...R.imp.values()].map(x=>({...x})).sort((a,b)=>(b.ts||0)-(a.ts||0));B.imp=new Map(S.imports.map(i=>[i.id,JSON.stringify(i)]));
   S.categories=R.cats&&Array.isArray(R.cats.list)?R.cats.list.map(c=>({...c})):defaultCats();B.cats=R.cats?JSON.stringify(S.categories):'';
   S.learn={...(R.learn||{})};B.learn=JSON.stringify(S.learn);
-  S.holders={...(R.holders||{})};B.holders=JSON.stringify(S.holders);
+  S.holders={...(R.holders||{})};S.accAlias={...(R.alias||{})};B.holders=JSON.stringify({h:S.holders,a:S.accAlias});
   S.jars=(R.jars||[]).map(j=>({...j}));B.jars=JSON.stringify(S.jars);
   S.positions=[...R.inv.values()].map(normPos);B.inv=new Map(S.positions.map(p=>[p.id,JSON.stringify(p)]));
   S.trades=[...R.trd.values()].map(normTrade);B.trd=new Map(S.trades.map(t=>[t.id,JSON.stringify(t)]));
@@ -297,7 +298,7 @@ function persist(){ // confronta con l'ultima versione salvata e manda solo quel
   const cfg=(key,id,val,wrap)=>{const j=JSON.stringify(val);if(j!==B[key]){B[key]=j;const data=wrap(JSON.parse(j));setRemote('cfg',id,data);ups.push({kind:'cfg',id,data})}};
   cfg('cats','categories',S.categories,list=>({list,catVer:2}));
   cfg('learn','learn',S.learn||{},map=>({map}));
-  cfg('holders','cards',S.holders||{},holders=>({holders}));
+  cfg('holders','cards',{h:S.holders||{},a:S.accAlias||{}},v=>({holders:v.h,alias:v.a}));
   cfg('jars','jars',S.jars||[],list=>({list}));
   if(ups.length||dels.length) write(ups,dels);
 }
@@ -360,13 +361,13 @@ let cT;function cacheSoon(){if(!hasIdb()) return;clearTimeout(cT);cT=setTimeout(
 async function saveCache(){
   if(!DB.user||DB.state!=='ok') return;
   const R=DB.remote;
-  try{await idb.set('cache',{user:DB.user.email,at:Date.now(),R:{mov:[...R.mov.values()],rec:[...R.rec.values()],imp:[...R.imp.values()],inv:[...R.inv.values()],trd:[...R.trd.values()],mkt:[...R.mkt.values()],cats:R.cats,learn:R.learn,holders:R.holders,jars:R.jars}})}catch(e){console.warn(e)}
+  try{await idb.set('cache',{user:DB.user.email,at:Date.now(),R:{mov:[...R.mov.values()],rec:[...R.rec.values()],imp:[...R.imp.values()],inv:[...R.inv.values()],trd:[...R.trd.values()],mkt:[...R.mkt.values()],cats:R.cats,learn:R.learn,holders:R.holders,alias:R.alias,jars:R.jars}})}catch(e){console.warn(e)}
 }
 async function loadCache(email){
   if(!hasIdb()) return false;
   try{const c=await idb.get('cache');if(!c||c.user!==email) return false;
     resetRemote();const R=DB.remote;c.R.mov.forEach(m=>R.mov.set(m.id,m));c.R.rec.forEach(r=>R.rec.set(r.id,r));c.R.imp.forEach(i=>R.imp.set(i.id,i));(c.R.inv||[]).forEach(p=>R.inv.set(p.id,p));(c.R.trd||[]).forEach(t=>R.trd.set(t.id,t));(c.R.mkt||[]).forEach(m=>R.mkt.set(m.id,m));
-    R.cats=c.R.cats;R.learn=c.R.learn;R.holders=c.R.holders;R.jars=c.R.jars;DB.cacheAt=c.at;return true}catch{return false}
+    R.cats=c.R.cats;R.learn=c.R.learn;R.holders=c.R.holders;R.alias=c.R.alias||null;R.jars=c.R.jars;DB.cacheAt=c.at;return true}catch{return false}
 }
 /* accesso */
 async function init(){
@@ -428,7 +429,7 @@ document.addEventListener('submit',async e=>{
     toast('Password aggiornata');history.replaceState(null,'',location.pathname);start(data.user);
   }
 });
-function exportState(){return {v:1,catVer:2,exported:new Date().toISOString(),categories:S.categories,movements:S.movements.map(normMov),recurring:S.recurring.map(normRec),learn:S.learn,imports:S.imports,holders:S.holders,jars:S.jars,positions:(S.positions||[]).map(normPos),trades:(S.trades||[]).map(normTrade)}}
+function exportState(){return {v:1,catVer:2,exported:new Date().toISOString(),categories:S.categories,movements:S.movements.map(normMov),recurring:S.recurring.map(normRec),learn:S.learn,imports:S.imports,holders:S.holders,accAlias:S.accAlias,jars:S.jars,positions:(S.positions||[]).map(normPos),trades:(S.trades||[]).map(normTrade)}}
 function saveFile(filename,data){
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([data],{type:filename.endsWith('.csv')?'text/csv;charset=utf-8':'application/json'}));
@@ -547,7 +548,7 @@ function accounts(){return [...new Set([...S.movements.map(m=>m.account),...S.re
 const NOW=new Date();
 const V={tab:'dash',y:NOW.getFullYear(),m:NOW.getMonth(),catScope:'m',payScope:'m',merScope:'m',merAll:false,catType:'uscita',
   f:{q:'',month:'',type:'',cat:'',acc:'',fc:true},limit:300,sel:new Set(),lastAcc:''};
-const TABS=[['dash','Riepilogo'],['mov','Movimenti'],['rec','Ricorrenti'],['jar','Salvadanai'],['inv','Investimenti'],['imp','Importa estratti'],['cat','Categorie'],['dati','Dati e salvataggio']];
+const TABS=[['dash','Riepilogo'],['mov','Movimenti'],['rec','Ricorrenti'],['jar','Salvadanai'],['inv','Investimenti'],['imp','Importa estratti'],['cat','Categorie e conti'],['dati','Dati e salvataggio']];
 
 function render(){
   const gate=gateView();
@@ -695,6 +696,8 @@ function payCard(){
 /* titolari delle carte, riconosciuti dalle ultime 4 cifre */
 const accKey=acc=>(String(acc||'').match(/(\d{4})\D*$/)||[])[1]||String(acc||'');
 const holderOf=acc=>acc?(S.holders||{})[accKey(acc)]||'':'';
+/* un conto rinominato: gli estratti futuri con il nome vecchio finiscono sul nome nuovo */
+const resolveAcc=a=>{let x=String(a||'').trim(),n=0;while(x&&(S.accAlias||{})[x]&&n++<10) x=S.accAlias[x];return x};
 const accLabel=acc=>{const h=holderOf(acc);return h?`${acc} · ${h}`:acc};
 function openHolder(acc){
   const f=openDlg(`<form><div class="dlg-h"><h3>Titolare della carta</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
@@ -1423,7 +1426,8 @@ function viewCat(){
     ${cs.map(c=>`<div style="border-top:1px solid var(--line);padding:9px 0">
       <div class="row" style="flex-wrap:nowrap"><input type="color" value="${c.color}" data-chg="catf" data-id="${c.id}" data-k="color" aria-label="Colore"><input value="${esc(c.name)}" data-chg="catf" data-id="${c.id}" data-k="name" style="flex:1" aria-label="Nome categoria">
       <span class="small muted nowrap" title="Movimenti">${cnt.get(c.id)||0}</span><button class="btn sm ghost danger" data-act="delcat" data-id="${c.id}" title="Elimina">🗑</button></div>
-      <input class="kw small" style="margin-top:6px" value="${esc(c.keywords||'')}" data-chg="catf" data-id="${c.id}" data-k="keywords" placeholder="parole chiave per il riconoscimento automatico, separate da virgola">
+      <div class="row" style="flex-wrap:nowrap;margin-top:6px;gap:6px"><input class="kw small" style="flex:1" value="${esc(c.keywords||'')}" data-chg="catf" data-id="${c.id}" data-k="keywords" placeholder="parole chiave per il riconoscimento automatico, separate da virgola">
+      <select class="small" data-chg="catf" data-id="${c.id}" data-k="kind" aria-label="Tipo" title="Sposta in un'altra colonna">${[['uscita','Uscita'],['entrata','Entrata'],['giroconto','Esclusa']].map(([k,l])=>`<option value="${k}" ${c.kind===k?'selected':''}>${l}</option>`).join('')}</select></div>
     </div>`).join('')||'<div class="empty">Nessuna categoria</div>'}</div>`};
   return `<div class="stack"><div class="card"><h2>Nuova categoria</h2><form class="row" id="newCat" onsubmit="return addCat(event)">
     <input type="color" name="color" value="#6366f1"><input name="name" placeholder="Nome della categoria" required style="flex:1;min-width:180px">
@@ -1433,9 +1437,58 @@ function viewCat(){
       <span><b>${none}</b> movimenti senza categoria</span><button class="btn sm" data-act="applyrules" ${none?'':'disabled'}>Categorizza automaticamente</button>
       <span><b>${learned}</b> associazioni imparate dalle tue scelte</span><button class="btn sm" data-act="forget" ${learned?'':'disabled'}>Dimentica</button></div>
     <p class="small muted" style="margin-bottom:0">Come funziona il riconoscimento: quando assegni una categoria a un movimento, la pagina ricorda il nome dell'esercente (es. <code>ESSELUNGA MILANO</code>) e la riproporrà nei prossimi import. Se non lo conosce, cerca le parole chiave delle categorie nella descrizione.</p></div>
+  ${accountsCard()}
   <div class="grid three">${col('uscita','Uscite','Le spese')}${col('entrata','Entrate','Stipendi, rimborsi, altri incassi')}${col('giroconto','Esclusi dai totali','Spostamenti fra conti tuoi: es. l\'addebito mensile della carta di credito sul conto, se importi anche l\'estratto della carta. Così non conti due volte le stesse spese.')}</div></div>`;
 }
 function addCat(e){e.preventDefault();const fd=new FormData(e.target);S.categories.push({id:uid(),name:fd.get('name').trim(),kind:fd.get('kind'),color:fd.get('color'),keywords:fd.get('keywords').trim()});save();toast('Categoria aggiunta');return false}
+
+/* rinomina un conto o una carta ovunque (movimenti, ricorrenti, importazioni, titolare); se il nome esiste già i due conti si uniscono */
+function renameAccount(from,to){
+  from=String(from||'').trim();to=String(to||'').trim();if(!from||!to||from===to) return 0;
+  let n=0;for(const m of S.movements) if(m.account===from){m.account=to;n++}
+  for(const r of S.recurring) if(r.account===from) r.account=to;
+  for(const i of S.imports) if(i.account===from) i.account=to;
+  S.holders={...(S.holders||{})};const kf=accKey(from),kt=accKey(to);
+  if(kf!==kt&&S.holders[kf]&&!S.holders[kt]) S.holders[kt]=S.holders[kf];
+  S.accAlias={...(S.accAlias||{})};delete S.accAlias[to];S.accAlias[from]=to;
+  for(const k in S.accAlias) if(S.accAlias[k]===from) S.accAlias[k]=to;
+  if(V.lastAcc===from) V.lastAcc=to;if(V.f&&V.f.acc===from) V.f.acc=to;
+  return n;
+}
+function accStats(){
+  const st=new Map(),get=a=>{if(!st.has(a)) st.set(a,{acc:a,n:0,rec:0,last:'',out:0});return st.get(a)};
+  for(const m of S.movements) if(m.account){const o=get(m.account);o.n++;if(m.date>o.last) o.last=m.date;if(m.type==='uscita'&&!excl(m)) o.out+=m.amount}
+  for(const r of S.recurring) if(r.account) get(r.account).rec++;
+  return [...st.values()].sort((a,b)=>b.last.localeCompare(a.last)||a.acc.localeCompare(b.acc));
+}
+function openAccount(acc){
+  const others=accounts().filter(a=>a!==acc),n=S.movements.filter(m=>m.account===acc).length;
+  openDlg(`<form><div class="dlg-h"><h3>Conto o carta</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  <div class="form">
+    <label class="full">Nome<input id="accName" name="name" required value="${esc(acc)}" list="accOthers"></label>
+    <datalist id="accOthers">${others.map(a=>`<option value="${esc(a)}">`).join('')}</datalist>
+    <label class="full">Titolare (facoltativo)<input id="accHolder" name="holder" value="${esc(holderOf(acc))}" list="holderList2" placeholder="es. Mario"></label>
+    <datalist id="holderList2">${[...new Set(Object.values(S.holders||{}))].map(h=>`<option value="${esc(h)}">`).join('')}</datalist>
+    <div class="full small muted">${n} ${n===1?'movimento':'movimenti'}. Il nome nuovo vale anche per le ricorrenti e per gli estratti che importerai: quelli col nome vecchio finiranno qui. Se scegli il nome di un altro conto, i due conti si uniscono.</div>
+  </div><div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
+  fd=>{
+    const name=String(fd.get('name')).trim(),holder=String(fd.get('holder')||'').trim();if(!name){toast('Scrivi un nome');return false}
+    const merge=name!==acc&&others.includes(name);
+    const go=()=>{renameAccount(acc,name);S.holders={...(S.holders||{})};const k=accKey(name);if(holder) S.holders[k]=holder;else delete S.holders[k];
+      save();toast(merge?`Conti uniti in “${name}”`:name!==acc?'Conto rinominato':'Conto aggiornato')};
+    if(merge){ask(`Esiste già “${name}”.\nUnire i due conti? ${n===1?'Il movimento':`I ${n} movimenti`} di “${acc}” ${n===1?'passa':'passano'} a “${name}”.`,{title:'Unisci conti',ok:'Unisci'}).then(y=>{if(y) go()});return}
+    go();
+  });
+}
+function accountsCard(){
+  const list=accStats();
+  return `<div class="card"><h2>Conti e carte</h2><p class="small muted" style="margin-top:-6px">Si creano da soli quando scrivi un conto in un movimento o importi un estratto. Qui puoi rinominarli, unirli (dai a uno il nome dell'altro) e indicare il titolare.</p>
+  ${list.length?`<div class="tblwrap"><table><thead><tr><th>Nome</th><th>Titolare</th><th class="num">Movimenti</th><th class="num">Ultimo</th><th class="num">Spese totali</th><th></th></tr></thead><tbody>
+  ${list.map(x=>`<tr class="clk" data-act="accedit" data-acc="${esc(x.acc)}"><td><b>${esc(x.acc)}</b>${x.rec?`<div class="small muted">${x.rec} ${x.rec===1?'ricorrente':'ricorrenti'}</div>`:''}</td><td>${esc(holderOf(x.acc))||'<span class="muted">—</span>'}</td>
+    <td class="num">${x.n}</td><td class="num nowrap">${x.last?fmtDate(x.last):'—'}</td><td class="num">${eur(x.out)}</td>
+    <td class="nowrap"><button class="btn sm ghost" data-act="accmov" data-acc="${esc(x.acc)}" title="Vedi i movimenti">☰</button><button class="btn sm ghost" data-act="accedit" data-acc="${esc(x.acc)}" title="Modifica">✎</button></td></tr>`).join('')}</tbody></table></div>`
+  :`<div class="empty">Nessun conto o carta: compaiono quando li indichi in un movimento o in un'importazione.</div>`}</div>`;
+}
 
 /* ============ DATI E SALVATAGGIO ============ */
 function viewDati(){
@@ -1722,7 +1775,7 @@ async function handleFile(file){
     // estratti della carta di credito: le spese sono numeri positivi → li tratto come uscite
     let autoInv=false;
     if(map.mode==='single'&&map.amount>=0){const v=rows.slice(hdr+1).map(r=>parseNum(r[map.amount])).filter(n=>n);autoInv=v.length>=3&&v.filter(n=>n>0).length/v.length>=0.85}
-    IMP={figs:rows.meta?.figs||scanFigures(rows,hdr,map),file:name,rows,hdr,map,invert:autoInv,autoInv,fmt:'dmy',account:typed||rows.meta?.account||V.lastAcc||'',isPdf:ext==='pdf'};
+    IMP={figs:rows.meta?.figs||scanFigures(rows,hdr,map),file:name,rows,hdr,map,invert:autoInv,autoInv,fmt:'dmy',account:resolveAcc(typed||rows.meta?.account||V.lastAcc||''),isPdf:ext==='pdf'};
     buildItems();
   }catch(e){console.error(e);IMP=null;notice('Non sono riuscito a leggere il file.\n\n'+e.message,'File non letto')}
   render();
@@ -1737,7 +1790,7 @@ function stmtMonth(items){
 function buildItems(){
   const {rows,hdr,map,invert,fmt}=IMP,items=[];
   const exact=new Map(),loose=new Map(),inc=(M,k)=>M.set(k,(M.get(k)||0)+1),take=(M,k)=>{const n=M.get(k)||0;if(n) M.set(k,n-1);return n>0};
-  const acc=(IMP.account||'').trim(); // si confronta solo con lo stesso conto o carta: una carta con sé stessa, i conti (senza carta) con i conti
+  const acc=resolveAcc(IMP.account); // si confronta solo con lo stesso conto o carta: una carta con sé stessa, i conti (senza carta) con i conti
   for(const m of S.movements){if((m.account||'')!==acc) continue;const a=m.amount.toFixed(2);inc(exact,m.date+'|'+m.type+'|'+a+'|'+learnKey(m.desc));inc(loose,m.date+'|'+m.type+'|'+a)}
   rows.slice(hdr+1).forEach((r,ri)=>{
     const date=parseDate(r[map.date],fmt);if(!date) return;
@@ -1838,7 +1891,7 @@ async function doImport(){
   if(rc.status==='diff'&&!await ask('La somma dei movimenti non coincide con i totali del documento.\nImportare comunque?',{title:'I conti non tornano',ok:'Importa comunque'})) return;
   if(skip.length&&!await ask(`${skip.length} ${skip.length===1?'riga non verrà importata':'righe non verranno importate'}: il totale nel riepilogo sarà diverso da quello dell'estratto conto.\nImportare comunque?`,{title:'Righe escluse',ok:'Importa comunque'})) return;
   const stmt=best?{label:best.label,value:best.doc,what:best.what}:null;
-  const acc=($('#impAcc')?.value||IMP.account||'').trim(),id=uid();
+  const acc=resolveAcc($('#impAcc')?.value||IMP.account||''),id=uid();
   for(const x of sel){S.movements.push({id:uid(),date:x.date,desc:x.desc,amount:x.amount,type:x.type,cat:x.cat,account:acc,note:'',imp:id,...(IMP.mese&&IMP.mese!==x.date.slice(0,7)?{mese:IMP.mese}:{})});if(x.cat) learn(x.desc,x.cat)}
   S.imports.unshift({id,date:today(),ts:Date.now(),file:IMP.file,account:acc,count:sel.length,check:rc.status,...(stmt&&!skip.length?{stmt}:{})});
   if(acc) V.lastAcc=acc;
@@ -1896,8 +1949,16 @@ const ACT={
   bulkcat:()=>{const v=$('#bulkCat').value;if(!v) return toast('Scegli una categoria');const c=v==='__none'?'':v;let n=0;for(const m of S.movements) if(V.sel.has(m.id)){m.cat=c;if(c) learn(m.desc,c);n++}V.sel.clear();save();toast(`Categoria applicata a ${n} movimenti`)},
   bulkdel:async()=>{if(!await ask(`Eliminare ${V.sel.size} movimenti?`,{title:'Elimina movimenti',ok:'Elimina'})) return;S.movements=S.movements.filter(m=>!V.sel.has(m.id));V.sel.clear();save();toast('Movimenti eliminati')},
   bulkclear:()=>{V.sel.clear();renderMovList()},
-  delcat:async a=>{const c=cat(a.dataset.id),n=S.movements.filter(m=>m.cat===c.id).length;if(!await ask(`Eliminare la categoria “${c.name}”?${n?`\n${n} movimenti resteranno senza categoria.`:''}`,{title:'Elimina categoria',ok:'Elimina'})) return;
-    S.categories=S.categories.filter(x=>x!==c);S.movements.forEach(m=>{if(m.cat===c.id) m.cat=''});S.recurring.forEach(r=>{if(r.cat===c.id) r.cat=''});for(const k in S.learn) if(S.learn[k]===c.id) delete S.learn[k];save()},
+  delcat:a=>{const c=cat(a.dataset.id);if(!c) return;const n=S.movements.filter(m=>m.cat===c.id).length,nr=S.recurring.filter(r=>r.cat===c.id).length;
+    const opts=S.categories.filter(x=>x!==c).sort((x,y)=>(x.kind===c.kind?0:1)-(y.kind===c.kind?0:1)||x.name.localeCompare(y.name));
+    openDlg(`<form><div class="dlg-h"><h3>Elimina “${esc(c.name)}”</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+    <div class="form">${n||nr?`<label class="full">${n} ${n===1?'movimento':'movimenti'}${nr?` e ${nr} ${nr===1?'ricorrente':'ricorrenti'}`:''} di questa categoria: dove li sposto?<select id="catMoveTo" name="to"><option value="">Lasciali senza categoria</option>${opts.map(x=>`<option value="${x.id}">${esc(x.name)}${x.kind!==c.kind&&!/esclus/i.test(x.name)?` (${x.kind==='giroconto'?'esclusa dai totali':x.kind})`:''}</option>`).join('')}</select></label>`:'<div class="full">Nessun movimento usa questa categoria.</div>'}
+    <div class="full small muted">Per unire due categorie, elimina una e sposta i suoi movimenti nell'altra.</div></div>
+    <div class="dlg-f"><button type="button" class="btn" data-act="close">Annulla</button><button class="btn danger">Elimina</button></div></form>`,
+    fd=>{const to=fd.get('to')||'';S.categories=S.categories.filter(x=>x!==c);S.movements.forEach(m=>{if(m.cat===c.id) m.cat=to});S.recurring.forEach(r=>{if(r.cat===c.id) r.cat=to});
+      for(const k in S.learn) if(S.learn[k]===c.id){if(to) S.learn[k]=to;else delete S.learn[k]}save();toast(to?`Categoria eliminata, movimenti spostati in “${cat(to)?.name}”`:'Categoria eliminata')})},
+  accedit:a=>openAccount(a.dataset.acc),
+  accmov:a=>{V.f={q:'',month:'',type:'',cat:'',acc:a.dataset.acc,fc:true};V.tab='mov';render();scrollTo(0,0)},
   applyrules:()=>{let n=0;for(const m of S.movements) if(!m.cat){const g=guessCat(m.desc,m.type);if(g){m.cat=g;n++}}save();toast(n?`Categorizzati ${n} movimenti`:'Nessuna regola corrisponde: assegna le categorie a mano e la pagina imparerà')},
   forget:async()=>{if(await ask('Dimenticare tutte le associazioni esercente → categoria imparate?',{title:'Dimentica',ok:'Dimentica'})){S.learn={};save()}},
   pickfile:()=>{if(!IMP?.loading) $('#fileIn').click()},
@@ -1951,7 +2012,7 @@ $('#invFile').addEventListener('change',e=>{const fs=[...e.target.files];e.targe
 $('#jsonIn').addEventListener('change',async e=>{const f=e.target.files[0];e.target.value='';if(!f) return;
   let d;try{d=JSON.parse(await f.text());if(!Array.isArray(d.movements)) throw 0}catch{return notice('Il file non è un archivio valido di Spese Mensili.','File non valido')}
   if(!await ask(`Il file contiene ${d.movements.length} movimenti e ${(d.recurring||[]).length} ricorrenti.\nSostituiscono i dati attuali, per tutti.`,{title:'Importa archivio',ok:'Importa'})) return;
-  const n=normalize(d);for(const k of ['categories','movements','recurring','learn','imports','holders','jars','positions','trades']) S[k]=n[k];
+  const n=normalize(d);for(const k of ['categories','movements','recurring','learn','imports','holders','accAlias','jars','positions','trades']) S[k]=n[k];
   S.movements.forEach(m=>{if(!m.id) m.id=uid()});S.recurring.forEach(r=>{if(!r.id) r.id=uid()});
   save();toast(`Importati ${S.movements.length} movimenti`)});
 let rT;addEventListener('resize',()=>{clearTimeout(rT);rT=setTimeout(()=>{if(V.tab==='dash') drawYearChart()},120)});

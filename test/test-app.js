@@ -25,7 +25,7 @@ function loadPage(file) {
     confirm: () => true, alert() {}, location: { protocol: 'file:', origin: '', pathname: '/' }, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v } } };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv};', ctx);
+  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv,renameAccount,resolveAcc,accStats,viewCat};', ctx);
   return ctx.__t;
 }
 
@@ -302,6 +302,30 @@ const CASES = [
     return t.suggestAccount(usd) === 'Revolut' && t.suggestAccount(eurAcc) === 'Revolut 2'
       && t.suggestAccount({ broker: 'Revolut', positions: [{ isin: 'XX0000000009' }] }) === 'Revolut 3'
       && t.suggestAccount({ broker: 'Trade Republic', positions: [] }) === 'Trade Republic';
+  }],
+  ['conti: rinominare sposta movimenti, ricorrenti, titolare, e gli estratti futuri col nome vecchio', t => {
+    t.S.movements = [mov('a1', '2026-08-01', 'Esso', 20, ALB), mov('a2', '2026-08-02', 'Coop', 30, CIN)];
+    t.S.recurring = [{ id: 'r1', name: 'Netflix', type: 'uscita', amount: 10, freq: 'm', start: '2026-01-01', cat: '', account: ALB, skip: [] }];
+    t.S.imports = [{ id: 'i1', account: ALB }]; t.S.holders = { '1111': 'Alberto' }; t.S.accAlias = {};
+    const n = t.renameAccount(ALB, 'Carta di Alberto');
+    const st = t.accStats();
+    return n === 1 && t.S.movements[0].account === 'Carta di Alberto' && t.S.recurring[0].account === 'Carta di Alberto' && t.S.imports[0].account === 'Carta di Alberto'
+      && t.S.holders['Carta di Alberto'] === 'Alberto' && t.resolveAcc(ALB) === 'Carta di Alberto' && st.length === 2
+      && /Carta di Alberto/.test(t.viewCat());
+  }],
+  ['conti: unire due conti e rinominare di nuovo segue la catena', t => {
+    t.S.movements = [mov('a1', '2026-08-01', 'Esso', 20, 'Conto A'), mov('a2', '2026-08-02', 'Coop', 30, 'Conto B')]; t.S.accAlias = {};
+    t.renameAccount('Conto A', 'Conto B'); t.renameAccount('Conto B', 'Conto Casa');
+    const it = importa(t, 'Data;Descrizione;Importo\n01/08/2026;Esso;-20,00', 'Conto A');
+    return t.S.movements.every(m => m.account === 'Conto Casa') && t.resolveAcc('Conto A') === 'Conto Casa' && t.resolveAcc('Conto B') === 'Conto Casa'
+      && it[0].dup === 'si';
+  }],
+  ['Supabase: i nomi dei conti rinominati si salvano con i titolari', async t => {
+    const sb = fakeSb(); connect(t, sb, [{ kind: 'cfg', id: 'categories', data: { list: t.S.categories, catVer: 2 } }]);
+    t.S.movements.push(mov('m1', '2026-11-03', 'Unicoop', 42.5, 'Conto X')); t.save(); await t.DB.q; sb.calls.length = 0;
+    t.renameAccount('Conto X', 'Conto Y'); t.save(); await t.DB.q;
+    const ups = sb.calls.filter(c => c[0] === 'upsert').flatMap(c => c[1]), cards = ups.find(u => u.id === 'cards');
+    return ups.some(u => u.id === 'm1' && u.data.account === 'Conto Y') && cards && cards.data.alias['Conto X'] === 'Conto Y';
   }],
   ['robo-advisor: una sola voce con titoli + liquidità, versamenti letti e riconosciuta al giro dopo', t => {
     t.S.positions = []; t.S.trades = [];
