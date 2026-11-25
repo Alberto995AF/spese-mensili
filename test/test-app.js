@@ -25,7 +25,7 @@ function loadPage(file) {
     confirm: () => true, alert() {}, location: { protocol: 'file:', origin: '', pathname: '/' }, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v } } };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv,renameAccount,resolveAcc,accStats,viewCat};', ctx);
+  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv,renameAccount,resolveAcc,accStats,viewCat,suggestDocs,docStatus,detectDoc,ymAdd,thisMonth,docsCard,docsAlert,doImport,coveredMonths};', ctx);
   return ctx.__t;
 }
 
@@ -326,6 +326,46 @@ const CASES = [
     t.renameAccount('Conto X', 'Conto Y'); t.save(); await t.DB.q;
     const ups = sb.calls.filter(c => c[0] === 'upsert').flatMap(c => c[1]), cards = ups.find(u => u.id === 'cards');
     return ups.some(u => u.id === 'm1' && u.data.account === 'Conto Y') && cards && cards.data.alias['Conto X'] === 'Conto Y';
+  }],
+  ['estratti attesi: suggeriti dai titolari, uno per conto e uno per carta', t => {
+    t.S.movements = [mov('a1', '2026-08-01', 'Esso', 20, ALB), mov('c1', '2026-08-02', 'Coop', 30, CIN)];
+    t.S.holders = { '1111': 'Persona A', '2222': 'Persona B' }; t.S.imports = [];
+    const ds = t.suggestDocs(), ca = ds.find(d => d.kind === 'carta' && d.holder === 'Persona A');
+    return ds.length === 4 && ds.filter(d => d.kind === 'conto').length === 2 && ca.account === ALB && ca.match === '1111' && ca.bank === 'Nexi';
+  }],
+  ['estratti attesi: importato, segnato a mano, da caricare, mancante, non controllato', t => {
+    const cur = t.thisMonth(), m1 = t.ymAdd(cur, -1), m2 = t.ymAdd(cur, -2), m3 = t.ymAdd(cur, -3), m4 = t.ymAdd(cur, -4);
+    const card = { id: 'd1', name: 'Carta A', kind: 'carta', account: ALB, match: '1111', from: m3 };
+    const conto = { id: 'd2', name: 'Conto A', kind: 'conto', account: 'Conto A', match: 'IT99', from: m3 };
+    t.S.docs = [card, conto]; t.S.docMarks = { ['d2|' + m3]: '2026-01-01' };
+    // vecchia importazione della carta senza docId: riconosciuta dal conto e dai mesi dei movimenti (con "mese" dell'estratto)
+    t.S.imports = [{ id: 'i1', account: ALB, file: 'carta.pdf' }, { id: 'i2', account: 'Conto A', file: 'conto.csv', docId: 'd2', months: [m2] }];
+    t.S.movements = [mov('a1', m2 + '-28', 'Esso', 20, ALB, { imp: 'i1', mese: m3 }), mov('a2', m3 + '-03', 'Coop', 30, ALB, { imp: 'i1' })];
+    const k = (d, m) => t.docStatus(d, m).k;
+    return k(card, m3) === 'ok' && k(card, m2) === 'missing' && k(card, m1) === 'due' && k(card, cur) === 'next' && k(card, m4) === 'before'
+      && k(conto, m3) === 'manual' && k(conto, m2) === 'ok' && /Mancano 3 estratti/.test(t.docsAlert()) && /Carta A/.test(t.docsCard());
+  }],
+  ['estratti attesi: riconosciuti dal contenuto del file o dal conto, e l\'importazione ricorda mese ed estratto', async t => {
+    t.S.docs = [{ id: 'd1', name: 'Carta A', kind: 'carta', account: ALB, match: '1111' }, { id: 'd2', name: 'Conto B', kind: 'conto', account: 'Conto B', match: 'IT60X054, 0123456' }];
+    const byText = t.detectDoc('Estratto conto IBAN IT60X0542811101000000123456 periodo', ''), byAcc = t.detectDoc('nessun indizio', ALB);
+    t.S.movements = []; t.S.imports = [];
+    importa(t, 'Data;Descrizione;Importo\n03/10/2026;Unicoop;-20,00\n05/10/2026;Esso;-30,00', 'Conto B'); t.IMP.docId = 'd2';
+    await t.doImport();
+    const imp = t.S.imports[0];
+    return byText.id === 'd2' && byAcc.id === 'd1' && t.detectDoc('altro', 'Conto Z') === null
+      && imp.docId === 'd2' && imp.months.join() === '2026-10' && t.coveredMonths(['2026-09', ...Array(12).fill('2026-10')]).join() === '2026-10';
+  }],
+  ['conto corrente con un nome: nelle spese per carta e conto resta fra i conti', t => {
+    t.S.docs = [{ id: 'd2', name: 'Conto B', kind: 'conto', account: 'Conto B' }];
+    t.S.movements = [mov('a1', '2026-10-03', 'Bolletta', 50, 'Conto B'), mov('a2', '2026-10-04', 'Esso', 20, ALB)]; t.S.recurring = [];
+    const sp = t.spendByAccount('2026-10-01', '2026-10-31');
+    return sp.cards.length === 1 && sp.cards[0].acc === ALB && sp.conti.r === 50;
+  }],
+  ['Supabase: estratti attesi e mesi segnati a mano si salvano', async t => {
+    const sb = fakeSb(); connect(t, sb, [{ kind: 'cfg', id: 'categories', data: { list: t.S.categories, catVer: 2 } }]);
+    t.S.docs = [{ id: 'd1', name: 'Carta A', kind: 'carta', account: ALB }]; t.S.docMarks = { 'd1|2026-10': '2026-11-25' }; t.save(); await t.DB.q;
+    const ups = sb.calls.filter(c => c[0] === 'upsert').flatMap(c => c[1]), d = ups.find(u => u.id === 'docs');
+    return d && d.data.list[0].name === 'Carta A' && d.data.marks['d1|2026-10'] === '2026-11-25' && ups.length === 1;
   }],
   ['robo-advisor: una sola voce con titoli + liquidità, versamenti letti e riconosciuta al giro dopo', t => {
     t.S.positions = []; t.S.trades = [];

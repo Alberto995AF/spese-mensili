@@ -62,7 +62,8 @@ select{max-width:100%}
 .kpi .lbl{font-size:12px;color:var(--muted);font-weight:600}
 .kpi .val{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px;letter-spacing:-.01em}
 .kpi .sub{font-size:12px;color:var(--muted);margin-top:2px}
-.pos{color:var(--in)} .neg{color:var(--out)}
+.pos{color:var(--in)} .neg{color:var(--out)} td.warn{color:var(--warn)}
+.docgrid th.num,.docgrid td.num{text-align:center;min-width:34px}
 .two{grid-template-columns:1.25fr 1fr} @media(max-width:900px){.two{grid-template-columns:1fr}}
 .three{grid-template-columns:repeat(3,1fr)} @media(max-width:900px){.three{grid-template-columns:1fr}}
 h2{font-size:15px;margin:0 0 12px} h3{font-size:14px;margin:0 0 8px}
@@ -229,7 +230,7 @@ const DEFAULT_CATS=[
 ];
 const defaultCats=()=>DEFAULT_CATS.map(([name,kind,color,keywords],i)=>({id:'k'+i,name,kind,color,keywords}));
 function defaultState(){
-  return {v:1,catVer:2,categories:defaultCats(),movements:[],recurring:[],learn:{},imports:[],holders:{},accAlias:{},jars:[],positions:[],trades:[]};
+  return {v:1,catVer:2,categories:defaultCats(),movements:[],recurring:[],learn:{},imports:[],holders:{},accAlias:{},docs:[],docMarks:{},jars:[],positions:[],trades:[]};
 }
 function normalize(d){
   const s=Object.assign(defaultState(),d||{});
@@ -237,6 +238,8 @@ function normalize(d){
   if(!s.learn||typeof s.learn!=='object') s.learn={};
   if(!s.holders||typeof s.holders!=='object') s.holders={};
   if(!s.accAlias||typeof s.accAlias!=='object') s.accAlias={};
+  if(!Array.isArray(s.docs)) s.docs=[];
+  if(!s.docMarks||typeof s.docMarks!=='object') s.docMarks={};
   if(!Array.isArray(s.jars)) s.jars=[];
   if(!Array.isArray(s.positions)) s.positions=[];
   if(!Array.isArray(s.trades)) s.trades=[];
@@ -256,12 +259,12 @@ let rev=0;
 
 /* ============ dati su Supabase ============
    Tabella items (kind, id, data):  mov = un movimento · rec = una ricorrente · imp = un'importazione
-   cfg = configurazione: categories {list}, learn {map}, cards {holders, alias}, jars {list}.
+   cfg = configurazione: categories {list}, learn {map}, cards {holders, alias}, jars {list}, docs {list, marks} (estratti attesi ogni mese e mesi segnati a mano).
    Leggono e scrivono solo gli account con l'email nella tabella members (regole nel database). */
 const CFG=window.SPESE_CONFIG||{};
 const DB={sb:null,user:null,state:'loading',ready:false,ro:false,pending:0,dirty:false,needReload:false,err:'',
-  remote:null,base:{mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),trd:new Map(),cats:'',learn:'{}',holders:'{}',jars:'[]'},q:Promise.resolve()};
-function resetRemote(){DB.remote={mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),trd:new Map(),mkt:new Map(),cats:null,learn:null,holders:null,alias:null,jars:null}}
+  remote:null,base:{mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),trd:new Map(),cats:'',learn:'{}',holders:'{}',jars:'[]',docs:'{"l":[],"m":{}}'},q:Promise.resolve()};
+function resetRemote(){DB.remote={mov:new Map(),rec:new Map(),imp:new Map(),inv:new Map(),trd:new Map(),mkt:new Map(),cats:null,learn:null,holders:null,alias:null,jars:null,docs:null}}
 resetRemote();
 const normMov=m=>({id:m.id,date:m.date,desc:m.desc||'',amount:round2(+m.amount||0),type:m.type==='entrata'?'entrata':'uscita',cat:m.cat||'',account:m.account||'',note:m.note||'',recId:m.recId||'',occ:m.occ||'',imp:m.imp||'',mese:m.mese||''});
 const normPos=p=>({id:p.id,isin:p.isin||'',name:p.name||'',kind:p.kind||'azione',qty:+p.qty||0,avg:p.avg==null||p.avg===''?null:+p.avg,refPrice:p.refPrice==null?null:+p.refPrice,refDate:p.refDate||'',newsQuery:p.newsQuery||'',cgId:p.cgId||'',broker:p.broker||'',archived:!!p.archived,...(p.symbol?{symbol:p.symbol}:{}),...(p.kind==='gestita'?{values:p.values||{},isins:p.isins||[],paidAt:p.paidAt||''}:{})});
@@ -275,6 +278,7 @@ function setRemote(kind,id,data){
   else if(id==='learn') R.learn=data?{...(data.map||{})}:null;
   else if(id==='cards'){R.holders=data?{...(data.holders||{})}:null;R.alias=data?{...(data.alias||{})}:null}
   else if(id==='jars') R.jars=data?(data.list||[]).map(x=>({...x})):null;
+  else if(id==='docs') R.docs=data?{list:(data.list||[]).map(x=>({...x})),marks:{...(data.marks||{})}}:null;
 }
 function applyRemote(){
   const R=DB.remote,B=DB.base;
@@ -285,6 +289,7 @@ function applyRemote(){
   S.learn={...(R.learn||{})};B.learn=JSON.stringify(S.learn);
   S.holders={...(R.holders||{})};S.accAlias={...(R.alias||{})};B.holders=JSON.stringify({h:S.holders,a:S.accAlias});
   S.jars=(R.jars||[]).map(j=>({...j}));B.jars=JSON.stringify(S.jars);
+  S.docs=(R.docs?.list||[]).map(d=>({...d}));S.docMarks={...(R.docs?.marks||{})};B.docs=JSON.stringify({l:S.docs,m:S.docMarks});
   S.positions=[...R.inv.values()].map(normPos);B.inv=new Map(S.positions.map(p=>[p.id,JSON.stringify(p)]));
   S.trades=[...R.trd.values()].map(normTrade);B.trd=new Map(S.trades.map(t=>[t.id,JSON.stringify(t)]));
   rev++;cacheSoon();
@@ -300,6 +305,7 @@ function persist(){ // confronta con l'ultima versione salvata e manda solo quel
   cfg('learn','learn',S.learn||{},map=>({map}));
   cfg('holders','cards',{h:S.holders||{},a:S.accAlias||{}},v=>({holders:v.h,alias:v.a}));
   cfg('jars','jars',S.jars||[],list=>({list}));
+  cfg('docs','docs',{l:S.docs||[],m:S.docMarks||{}},v=>({list:v.l,marks:v.m}));
   if(ups.length||dels.length) write(ups,dels);
 }
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -361,13 +367,13 @@ let cT;function cacheSoon(){if(!hasIdb()) return;clearTimeout(cT);cT=setTimeout(
 async function saveCache(){
   if(!DB.user||DB.state!=='ok') return;
   const R=DB.remote;
-  try{await idb.set('cache',{user:DB.user.email,at:Date.now(),R:{mov:[...R.mov.values()],rec:[...R.rec.values()],imp:[...R.imp.values()],inv:[...R.inv.values()],trd:[...R.trd.values()],mkt:[...R.mkt.values()],cats:R.cats,learn:R.learn,holders:R.holders,alias:R.alias,jars:R.jars}})}catch(e){console.warn(e)}
+  try{await idb.set('cache',{user:DB.user.email,at:Date.now(),R:{mov:[...R.mov.values()],rec:[...R.rec.values()],imp:[...R.imp.values()],inv:[...R.inv.values()],trd:[...R.trd.values()],mkt:[...R.mkt.values()],cats:R.cats,learn:R.learn,holders:R.holders,alias:R.alias,jars:R.jars,docs:R.docs}})}catch(e){console.warn(e)}
 }
 async function loadCache(email){
   if(!hasIdb()) return false;
   try{const c=await idb.get('cache');if(!c||c.user!==email) return false;
     resetRemote();const R=DB.remote;c.R.mov.forEach(m=>R.mov.set(m.id,m));c.R.rec.forEach(r=>R.rec.set(r.id,r));c.R.imp.forEach(i=>R.imp.set(i.id,i));(c.R.inv||[]).forEach(p=>R.inv.set(p.id,p));(c.R.trd||[]).forEach(t=>R.trd.set(t.id,t));(c.R.mkt||[]).forEach(m=>R.mkt.set(m.id,m));
-    R.cats=c.R.cats;R.learn=c.R.learn;R.holders=c.R.holders;R.alias=c.R.alias||null;R.jars=c.R.jars;DB.cacheAt=c.at;return true}catch{return false}
+    R.cats=c.R.cats;R.learn=c.R.learn;R.holders=c.R.holders;R.alias=c.R.alias||null;R.jars=c.R.jars;R.docs=c.R.docs||null;DB.cacheAt=c.at;return true}catch{return false}
 }
 /* accesso */
 async function init(){
@@ -429,7 +435,7 @@ document.addEventListener('submit',async e=>{
     toast('Password aggiornata');history.replaceState(null,'',location.pathname);start(data.user);
   }
 });
-function exportState(){return {v:1,catVer:2,exported:new Date().toISOString(),categories:S.categories,movements:S.movements.map(normMov),recurring:S.recurring.map(normRec),learn:S.learn,imports:S.imports,holders:S.holders,accAlias:S.accAlias,jars:S.jars,positions:(S.positions||[]).map(normPos),trades:(S.trades||[]).map(normTrade)}}
+function exportState(){return {v:1,catVer:2,exported:new Date().toISOString(),categories:S.categories,movements:S.movements.map(normMov),recurring:S.recurring.map(normRec),learn:S.learn,imports:S.imports,holders:S.holders,accAlias:S.accAlias,docs:S.docs,docMarks:S.docMarks,jars:S.jars,positions:(S.positions||[]).map(normPos),trades:(S.trades||[]).map(normTrade)}}
 function saveFile(filename,data){
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([data],{type:filename.endsWith('.csv')?'text/csv;charset=utf-8':'application/json'}));
@@ -585,7 +591,7 @@ function viewDash(){
   const years=new Set([NOW.getFullYear(),NOW.getFullYear()+1,...S.movements.map(x=>+x.date.slice(0,4))]);
   const minY=Math.min(...years),maxY=Math.max(...years);
   const split=(r,f)=>f?`registrate ${eur(r)} · <b>previste ${eur(f)}</b>`:'tutte registrate';
-  let h=`<div class="stack">${demoBanner()}${reconAlerts()}`;
+  let h=`<div class="stack">${demoBanner()}${reconAlerts()}${docsAlert()}`;
   if(empty) h+=`<div class="banner info"><div style="flex:1"><b>Benvenuto!</b> Inizia aggiungendo un movimento, importando un estratto conto oppure impostando le entrate e le spese ricorrenti (stipendio, affitto, bollette…): il riepilogo mostrerà anche i totali previsti per i mesi futuri.</div>
     <button class="btn primary" data-act="newmov">+ Movimento</button><button class="btn" data-act="tab" data-tab="imp">Importa estratto conto</button><button class="btn" data-act="newrec">+ Ricorrente</button><button class="btn ghost" data-act="tab" data-tab="dati">Hai già dei dati? Importali</button></div>`;
   h+=`<div class="row between">
@@ -633,7 +639,8 @@ function catCard(){
 }
 /* spesa per carta e per conto; su una carta un'entrata è uno storno e riduce la spesa */
 function spendByAccount(from,to){
-  const map=new Map(),get=k=>{if(!map.has(k)) map.set(k,{acc:k,r:0,f:0,rf:0,n:0});return map.get(k)};
+  const conto=new Set((S.docs||[]).filter(d=>d.kind==='conto'&&d.account).map(d=>resolveAcc(d.account)));
+  const map=new Map(),get=k=>{k=conto.has(k)?'':k;if(!map.has(k)) map.set(k,{acc:k,r:0,f:0,rf:0,n:0});return map.get(k)};
   for(const x of S.movements){
     const mm=effMonth(x);if(mm<from.slice(0,7)||mm>to.slice(0,7)||excl(x)) continue;
     if(x.type==='uscita'){const o=get(x.account||'');o.r+=x.amount;o.n++}
@@ -1775,11 +1782,112 @@ async function handleFile(file){
     // estratti della carta di credito: le spese sono numeri positivi → li tratto come uscite
     let autoInv=false;
     if(map.mode==='single'&&map.amount>=0){const v=rows.slice(hdr+1).map(r=>parseNum(r[map.amount])).filter(n=>n);autoInv=v.length>=3&&v.filter(n=>n>0).length/v.length>=0.85}
-    IMP={figs:rows.meta?.figs||scanFigures(rows,hdr,map),file:name,rows,hdr,map,invert:autoInv,autoInv,fmt:'dmy',account:resolveAcc(typed||rows.meta?.account||V.lastAcc||''),isPdf:ext==='pdf'};
+    const hay=[name,rows.meta?.account||'',...rows.slice(0,80).map(r=>(r||[]).join(' '))].join(' '),chosen=docById(V.impDoc),doc=chosen||detectDoc(hay,resolveAcc(typed||rows.meta?.account||''));
+    IMP={figs:rows.meta?.figs||scanFigures(rows,hdr,map),file:name,rows,hdr,map,invert:autoInv,autoInv,fmt:'dmy',account:doc?resolveAcc(doc.account):resolveAcc(typed||rows.meta?.account||V.lastAcc||''),isPdf:ext==='pdf',docId:doc?.id||'',docAuto:!!doc&&!chosen};
     buildItems();
   }catch(e){console.error(e);IMP=null;notice('Non sono riuscito a leggere il file.\n\n'+e.message,'File non letto')}
   render();
 }
+/* ============ estratti attesi ogni mese ============
+   doc = {id, name, kind:'conto'|'carta', bank, holder, account (nome del conto/carta nell'app, vuoto = movimenti senza conto),
+          match (parole o numeri che compaiono nel file, separati da virgola), from ('AAAA-MM': da quando controllarlo), off}
+   Un mese è a posto se c'è un'importazione di quell'estratto che lo copre, oppure se è segnato a mano (docMarks['id|AAAA-MM']). */
+const activeDocs=()=>(S.docs||[]).filter(d=>!d.off);
+const docById=id=>(S.docs||[]).find(d=>d.id===id);
+const ymAdd=(ym,n)=>{const [y,m]=ym.split('-').map(Number),d=new Date(y,m-1+n,1);return d.getFullYear()+'-'+pad(d.getMonth()+1)};
+const thisMonth=()=>today().slice(0,7);
+function coveredMonths(list){ // i mesi con almeno il 10% dei movimenti (una riga isolata del mese prima non lo "copre")
+  const c={};list.filter(Boolean).forEach(k=>c[k]=(c[k]||0)+1);const n=list.length;
+  return Object.keys(c).filter(k=>c[k]>=Math.max(1,n*0.1)).sort();
+}
+const importMonths=i=>i.months||coveredMonths(S.movements.filter(m=>m.imp===i.id).map(effMonth));
+function importsOfDoc(d){
+  const acc=d.account?resolveAcc(d.account):null;
+  return S.imports.filter(i=>i.docId?i.docId===d.id:(acc!=null&&acc!==''&&resolveAcc(i.account)===acc));
+}
+function detectDoc(hay,acc){
+  const h=String(hay||'').toLowerCase(),ds=activeDocs();
+  const byKw=ds.find(d=>String(d.match||'').split(',').map(x=>x.trim().toLowerCase()).filter(x=>x.length>=3).some(x=>h.includes(x)));
+  if(byKw) return byKw;
+  return acc?ds.find(d=>d.account&&resolveAcc(d.account)===acc)||null:null;
+}
+/* stato di un estratto in un mese: ok (importato), manual (segnato a mano), due (mese appena finito), missing, next (mese in corso), before */
+function docStatus(d,ym){
+  const files=importsOfDoc(d).filter(i=>importMonths(i).includes(ym));
+  if(files.length) return {k:'ok',files};
+  if(S.docMarks?.[d.id+'|'+ym]) return {k:'manual',files};
+  if(d.from&&ym<d.from) return {k:'before',files};
+  const cur=thisMonth();
+  return {k:ym>=cur?'next':ym===ymAdd(cur,-1)?'due':'missing',files};
+}
+const DOC_ICON={ok:['✔','pos','importato'],manual:['✎','pos','segnato a mano'],due:['…','warn','da caricare'],missing:['✗','neg','manca'],next:['·','muted','mese in corso'],before:['','muted','non controllato']};
+function docsCard(){
+  const ds=activeDocs(),cur=thisMonth();
+  if(!ds.length) return `<div class="card"><h2>Estratti di ogni mese</h2><p class="small muted" style="margin-top:-6px">Indica gli estratti che devono arrivare ogni mese (conti correnti e carte di credito, con la banca): l'app li riconosce quando li importi e ti avvisa di quelli che mancano.</p>
+    <div class="row"><button class="btn primary" data-act="docsuggest">Crea quelli suggeriti</button><button class="btn" data-act="docnew">+ Estratto</button></div></div>`;
+  const first=ds.reduce((a,d)=>d.from&&d.from<a?d.from:a,cur),start=[ymAdd(cur,-11),first].sort()[1],months=[];for(let m=start;m<=cur;m=ymAdd(m,1)) months.push(m);
+  return `<div class="card"><div class="row between" style="margin-bottom:8px"><h2 style="margin:0">Estratti di ogni mese</h2><button class="btn sm" data-act="docnew">+ Estratto</button></div>
+  <div class="tblwrap"><table class="small docgrid"><thead><tr><th>Estratto</th>${months.map(m=>`<th class="num">${MESI3[+m.slice(5)-1]}${m.slice(5)==='01'||m===start?`<div class="muted">${m.slice(0,4)}</div>`:''}</th>`).join('')}</tr></thead><tbody>
+  ${ds.map(d=>`<tr><td class="clk nowrap" data-act="docedit" data-id="${d.id}"><b>${esc(d.name)}</b><div class="muted">${esc([d.bank,d.kind==='carta'?'carta':'conto'].filter(Boolean).join(' · '))} ✎</div></td>
+    ${months.map(m=>{const st=docStatus(d,m),[ic,cl,lb]=DOC_ICON[st.k];return `<td class="num ${cl} ${st.k==='before'?'':'clk'}" ${st.k==='before'?'':`data-act="docmonth" data-id="${d.id}" data-m="${m}"`} title="${MESI[+m.slice(5)-1]} ${m.slice(0,4)}: ${lb}${st.files.length?' — '+esc(st.files.map(f=>f.file).join(', ')):''}"><b>${ic}</b></td>`}).join('')}</tr>`).join('')}</tbody></table></div>
+  <p class="small muted" style="margin:8px 0 0">✔ importato · ✎ segnato a mano · … da caricare (mese appena finito) · ✗ manca. Tocca un mese per segnarlo come caricato anche senza file, ad esempio se hai inserito i movimenti a mano. Le carte contano nel mese dell'estratto.</p></div>`;
+}
+function docsAlert(){
+  const cur=thisMonth(),miss=[];
+  for(const d of activeDocs()) for(let i=3;i>=1;i--){const m=ymAdd(cur,-i),st=docStatus(d,m);if(st.k==='missing'||st.k==='due') miss.push({d,m,k:st.k})}
+  if(!miss.length) return '';
+  const byM={};miss.forEach(x=>(byM[x.m]=byM[x.m]||[]).push(x));
+  return `<div class="banner"><div style="flex:1"><b>📄 ${miss.length===1?'Manca un estratto':'Mancano '+miss.length+' estratti'}</b>
+    <ul style="margin:6px 0 0;padding-left:18px">${Object.entries(byM).sort(([a],[b])=>a.localeCompare(b)).map(([m,xs])=>`<li>${MESI[+m.slice(5)-1]} ${m.slice(0,4)}${xs[0].k==='due'?' <span class="muted">(mese appena finito)</span>':''}: ${xs.map(x=>esc(x.d.name)).join(', ')}</li>`).join('')}</ul></div>
+    <button class="btn sm" data-act="tab" data-tab="imp">Vai a Importa estratti</button></div>`;
+}
+function suggestDocs(){
+  const cur=thisMonth(),prev=ymAdd(cur,-1),out=[];
+  const people=[...new Set(Object.values(S.holders||{}).filter(Boolean))];
+  for(const h of people){
+    const cards=accounts().filter(a=>holderOf(a)===h).map(a=>({a,n:S.movements.filter(m=>m.account===a).length})).sort((x,y)=>y.n-x.n);
+    out.push({id:uid(),name:'Conto corrente '+h,kind:'conto',bank:'',holder:h,account:'Conto corrente '+h,match:'',from:prev,off:false});
+    const c=cards[0]?.a||'',d4=(c.match(/(\d{4})\D*$/)||[])[1]||'';
+    const months=c?S.imports.filter(i=>resolveAcc(i.account)===resolveAcc(c)).flatMap(importMonths).sort():[];
+    const bank=(c.match(/carta\s+(\w+)/i)||[])[1]||'';
+    out.push({id:uid(),name:'Carta di credito '+h,kind:'carta',bank:bank&&!/^\d/.test(bank)?bank:'',holder:h,account:c,match:d4,from:months[0]||prev,off:false});
+  }
+  if(!people.length) out.push({id:uid(),name:'Conto corrente',kind:'conto',bank:'',holder:'',account:'',match:'',from:prev,off:false},{id:uid(),name:'Carta di credito',kind:'carta',bank:'',holder:'',account:'',match:'',from:prev,off:false});
+  return out;
+}
+function openDoc(id){
+  const d=id?docById(id):{id:'',name:'',kind:'conto',bank:'',holder:'',account:'',match:'',from:ymAdd(thisMonth(),-1),off:false};if(!d) return;
+  openDlg(`<form><div class="dlg-h"><h3>${id?'Estratto atteso':'Nuovo estratto atteso'}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  <div class="form">
+    <label class="full">Nome<input id="dcName" name="name" required value="${esc(d.name)}" placeholder="es. Conto corrente Mario"></label>
+    <label>Tipo<select id="dcKind" name="kind"><option value="conto" ${d.kind==='conto'?'selected':''}>Conto corrente</option><option value="carta" ${d.kind==='carta'?'selected':''}>Carta di credito</option></select></label>
+    <label>Banca<input id="dcBank" name="bank" value="${esc(d.bank||'')}" placeholder="es. Intesa, Nexi, Fineco"></label>
+    <label>Titolare<input id="dcHolder" name="holder" value="${esc(d.holder||'')}" list="holderList3"></label>
+    <datalist id="holderList3">${[...new Set(Object.values(S.holders||{}))].map(h=>`<option value="${esc(h)}">`).join('')}</datalist>
+    <label>Controlla dal mese<input id="dcFrom" type="month" name="from" value="${esc(d.from||'')}"></label>
+    <label class="full">Conto o carta nell'app<input id="dcAcc" name="account" list="accList" value="${esc(d.account||'')}" placeholder="vuoto = movimenti senza conto"></label>
+    <label class="full">Come lo riconosco nel file<input id="dcMatch" name="match" value="${esc(d.match||'')}" placeholder="es. 1234 (ultime cifre della carta) o una parte dell'IBAN; più voci separate da virgola"></label>
+    <label class="full row small" style="gap:8px"><input type="checkbox" name="off" ${d.off?'checked':''} style="width:auto"> Non controllarlo più (es. conto chiuso)</label>
+    <div class="full small muted">Quando importi un file l'app cerca queste parole o numeri nel nome e nel contenuto: se li trova, sceglie da sola questo estratto e il suo conto. Puoi sempre sceglierlo a mano nella pagina di importazione.</div>
+  </div><div class="dlg-f">${id?`<button type="button" class="btn danger" data-act="docdel" data-id="${d.id}" style="margin-right:auto">Elimina</button>`:''}<button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
+  fd=>{
+    const nd={...d,id:d.id||uid(),name:String(fd.get('name')).trim(),kind:fd.get('kind'),bank:String(fd.get('bank')||'').trim(),holder:String(fd.get('holder')||'').trim(),
+      account:resolveAcc(fd.get('account')),match:String(fd.get('match')||'').trim(),from:String(fd.get('from')||''),off:!!fd.get('off')};
+    if(!nd.name){toast('Scrivi un nome');return false}
+    S.docs=[...(S.docs||[]).filter(x=>x.id!==nd.id),nd];save();toast(id?'Estratto aggiornato':'Estratto aggiunto');
+  });
+}
+function openDocMonth(id,ym){
+  const d=docById(id);if(!d) return;const st=docStatus(d,ym),k=d.id+'|'+ym,lbl=`${MESI[+ym.slice(5)-1]} ${ym.slice(0,4)}`;
+  openDlg(`<form><div class="dlg-h"><h3>${esc(d.name)} · ${lbl}</h3><button type="button" class="btn ghost" data-act="close" aria-label="Chiudi">✕</button></div>
+  <div style="padding:12px 16px;display:grid;gap:10px">
+    ${st.files.length?`<div>✔ Importato: ${st.files.map(f=>`<b>${esc(f.file)}</b> (${fmtDate(f.date)}, ${S.movements.filter(m=>m.imp===f.id).length} movimenti)`).join(', ')}</div>`
+      :st.k==='manual'?`<div>✎ Segnato come caricato a mano.</div>`:`<div>${st.k==='next'?'Il mese è ancora in corso.':'Nessun file importato per questo mese.'}</div>`}
+    <p class="small muted" style="margin:0">Segnalo come caricato se i movimenti li hai già inseriti in un altro modo (a mano, da un altro file) o se quel mese l'estratto non c'è.</p></div>
+  <div class="dlg-f">${st.k==='manual'?`<button type="button" class="btn" data-act="docunmark" data-k="${esc(k)}">Togli il segno</button>`:!st.files.length?`<button type="button" class="btn" data-act="docmark" data-k="${esc(k)}">Segna come caricato</button>`:''}
+    ${!st.files.length?`<button type="button" class="btn primary" data-act="docimport" data-id="${d.id}">Importa il file</button>`:''}<button type="button" class="btn" data-act="close">Chiudi</button></div></form>`,()=>{});
+}
+
 /* un estratto della carta conta tutto nel suo mese: quello in cui cadono quasi tutte le spese */
 function stmtMonth(items){
   const ds=items.map(x=>x.date).sort();if(!ds.length) return '';
@@ -1824,10 +1932,12 @@ function reconAlerts(){
 function viewImp(){
   let h=`<div class="stack"><div class="card"><h2>Importa estratto conto</h2>
   <p class="small muted" style="margin-top:-4px">Formati accettati: <b>CSV</b> ed <b>Excel</b> (i migliori: li scarichi dall'home banking, sezione movimenti → esporta) e <b>PDF</b> con testo selezionabile (le righe vengono lette in automatico: controllale). Il file viene letto solo sul tuo computer, non viene inviato a nessuno.</p>
-  <div class="row" style="margin:10px 0 12px"><label class="lab" style="min-width:260px">Conto o carta di provenienza<input id="impAcc" list="accList" value="${esc(IMP?.account??V.lastAcc)}" placeholder="es. Conto Intesa, Carta Visa"></label></div>
+  <div class="row" style="margin:10px 0 12px"><label class="lab" style="min-width:260px">Conto o carta di provenienza<input id="impAcc" list="accList" value="${esc(IMP?.account??V.lastAcc)}" placeholder="es. Conto Intesa, Carta Visa"></label>
+    ${activeDocs().length?`<label class="lab" style="min-width:220px">Quale estratto è${IMP?.docAuto?' <span class="pos small">✔ riconosciuto</span>':''}<select id="impDoc"><option value="">— nessuno di quelli attesi —</option>${activeDocs().map(d=>`<option value="${d.id}" ${(IMP?IMP.docId:V.impDoc)===d.id?'selected':''}>${esc(d.name)}${d.bank?' · '+esc(d.bank):''}</option>`).join('')}</select></label>`:''}</div>
   <div class="drop" id="drop" data-act="pickfile">${IMP?.loading?`<span class="spin"></span> Sto leggendo <b>${esc(IMP.file)}</b>…`:`<div style="font-size:15px">Trascina qui l'estratto conto oppure <u>sceglilo dal computer</u></div><div class="small" style="margin-top:4px">.csv · .xlsx · .xls · .pdf</div>`}</div>
   <input type="file" id="fileIn" accept=".csv,.txt,.xlsx,.xls,.xlsm,.ods,.pdf" hidden></div>`;
   if(IMP&&!IMP.loading) h+=impMapCard()+impReconCard()+impItemsCard();
+  h+=docsCard();
   if(S.imports.length) h+=`<div class="card"><h2>Importazioni fatte</h2><div class="tblwrap"><table><thead><tr><th>Data</th><th>File</th><th>Conto</th><th class="num">Movimenti</th><th>Controllo</th><th></th></tr></thead><tbody>
     ${S.imports.slice(0,30).map(i=>`<tr><td>${fmtDate(i.date)}</td><td>${esc(i.file)}</td><td>${esc(accLabel(i.account||''))}</td><td class="num">${S.movements.filter(m=>m.imp===i.id).length}</td><td class="nowrap">${(c=>c?(c.ok?`<span class="pos">✔ torna</span> <span class="muted">${eur(i.stmt.value)}</span>`:`<span class="neg">⚠ ${c.diff<0?'mancano '+eur(-c.diff):eur(c.diff)+' in più'}</span>`):'')(impCheck(i))||(i.check==='ok'?'<span class="pos">✔ tornava</span>':i.check==='diff'?'<span class="neg">⚠ non tornava</span>':'<span class="muted">—</span>')}</td><td><button class="btn sm danger" data-act="undoimp" data-id="${i.id}">annulla import</button></td></tr>`).join('')}</tbody></table></div></div>`;
   h+=`<div class="card small muted"><h3 style="color:var(--text)">Consigli</h3><ul style="margin:0;padding-left:18px">
@@ -1884,6 +1994,8 @@ function bindImp(){
   d.ondragover=e=>{e.preventDefault();d.classList.add('over')};d.ondragleave=()=>d.classList.remove('over');
   d.ondrop=e=>{e.preventDefault();d.classList.remove('over');const f=e.dataTransfer.files[0];if(f) handleFile(f)};
   const a=$('#impAcc');a.onchange=()=>{V.lastAcc=a.value.trim();if(IMP&&!IMP.loading){IMP.account=V.lastAcc;buildItems();render()}};
+  const sd=$('#impDoc');if(sd) sd.onchange=()=>{const d=docById(sd.value);if(!IMP||IMP.loading){V.impDoc=sd.value;if(d){a.value=d.account||'';V.lastAcc=a.value}return}
+    IMP.docId=sd.value;IMP.docAuto=false;if(d){IMP.account=resolveAcc(d.account);a.value=IMP.account}buildItems();render()};
 }
 async function doImport(){
   const sel=IMP.items.filter(i=>i.sel);if(!sel.length) return;
@@ -1891,11 +2003,11 @@ async function doImport(){
   if(rc.status==='diff'&&!await ask('La somma dei movimenti non coincide con i totali del documento.\nImportare comunque?',{title:'I conti non tornano',ok:'Importa comunque'})) return;
   if(skip.length&&!await ask(`${skip.length} ${skip.length===1?'riga non verrà importata':'righe non verranno importate'}: il totale nel riepilogo sarà diverso da quello dell'estratto conto.\nImportare comunque?`,{title:'Righe escluse',ok:'Importa comunque'})) return;
   const stmt=best?{label:best.label,value:best.doc,what:best.what}:null;
-  const acc=resolveAcc($('#impAcc')?.value||IMP.account||''),id=uid();
+  const acc=resolveAcc($('#impAcc')?.value||IMP.account||''),id=uid(),months=coveredMonths(sel.map(x=>IMP.mese||x.date.slice(0,7)));
   for(const x of sel){S.movements.push({id:uid(),date:x.date,desc:x.desc,amount:x.amount,type:x.type,cat:x.cat,account:acc,note:'',imp:id,...(IMP.mese&&IMP.mese!==x.date.slice(0,7)?{mese:IMP.mese}:{})});if(x.cat) learn(x.desc,x.cat)}
-  S.imports.unshift({id,date:today(),ts:Date.now(),file:IMP.file,account:acc,count:sel.length,check:rc.status,...(stmt&&!skip.length?{stmt}:{})});
+  S.imports.unshift({id,date:today(),ts:Date.now(),file:IMP.file,account:acc,count:sel.length,check:rc.status,months,...(IMP.docId?{docId:IMP.docId}:{}),...(stmt&&!skip.length?{stmt}:{})});
   if(acc) V.lastAcc=acc;
-  IMP=null;V.tab='mov';V.f={q:'',month:'',type:'',cat:'',acc:acc||'',fc:true};
+  IMP=null;V.impDoc='';V.tab='mov';V.f={q:'',month:'',type:'',cat:'',acc:acc||'',fc:true};
   save();toast(`Importati ${sel.length} movimenti`);
 }
 
@@ -1958,6 +2070,15 @@ const ACT={
     fd=>{const to=fd.get('to')||'';S.categories=S.categories.filter(x=>x!==c);S.movements.forEach(m=>{if(m.cat===c.id) m.cat=to});S.recurring.forEach(r=>{if(r.cat===c.id) r.cat=to});
       for(const k in S.learn) if(S.learn[k]===c.id){if(to) S.learn[k]=to;else delete S.learn[k]}save();toast(to?`Categoria eliminata, movimenti spostati in “${cat(to)?.name}”`:'Categoria eliminata')})},
   accedit:a=>openAccount(a.dataset.acc),
+  docnew:()=>openDoc(null),
+  docedit:a=>openDoc(a.dataset.id),
+  docmonth:a=>openDocMonth(a.dataset.id,a.dataset.m),
+  docsuggest:()=>{S.docs=[...(S.docs||[]),...suggestDocs()];save();toast('Estratti creati: controlla banca e riconoscimento con ✎')},
+  docdel:async a=>{const d=docById(a.dataset.id);if(!d||!await ask(`Eliminare “${d.name}” dagli estratti attesi?\nI file già importati e i movimenti restano.`,{title:'Elimina estratto atteso',ok:'Elimina'})) return;
+    S.docs=S.docs.filter(x=>x!==d);S.docMarks=Object.fromEntries(Object.entries(S.docMarks||{}).filter(([k])=>!k.startsWith(d.id+'|')));if(dlg.open) dlg.close();save();toast('Estratto eliminato')},
+  docmark:a=>{S.docMarks={...(S.docMarks||{}),[a.dataset.k]:today()};if(dlg.open) dlg.close();save();toast('Segnato come caricato')},
+  docunmark:a=>{const m={...(S.docMarks||{})};delete m[a.dataset.k];S.docMarks=m;if(dlg.open) dlg.close();save();toast('Segno tolto')},
+  docimport:a=>{const d=docById(a.dataset.id);if(dlg.open) dlg.close();V.impDoc=d?.id||'';if(d) V.lastAcc=d.account||'';IMP=null;V.tab='imp';render();scrollTo(0,0)},
   accmov:a=>{V.f={q:'',month:'',type:'',cat:'',acc:a.dataset.acc,fc:true};V.tab='mov';render();scrollTo(0,0)},
   applyrules:()=>{let n=0;for(const m of S.movements) if(!m.cat){const g=guessCat(m.desc,m.type);if(g){m.cat=g;n++}}save();toast(n?`Categorizzati ${n} movimenti`:'Nessuna regola corrisponde: assegna le categorie a mano e la pagina imparerà')},
   forget:async()=>{if(await ask('Dimenticare tutte le associazioni esercente → categoria imparate?',{title:'Dimentica',ok:'Dimentica'})){S.learn={};save()}},
@@ -2012,7 +2133,7 @@ $('#invFile').addEventListener('change',e=>{const fs=[...e.target.files];e.targe
 $('#jsonIn').addEventListener('change',async e=>{const f=e.target.files[0];e.target.value='';if(!f) return;
   let d;try{d=JSON.parse(await f.text());if(!Array.isArray(d.movements)) throw 0}catch{return notice('Il file non è un archivio valido di Spese Mensili.','File non valido')}
   if(!await ask(`Il file contiene ${d.movements.length} movimenti e ${(d.recurring||[]).length} ricorrenti.\nSostituiscono i dati attuali, per tutti.`,{title:'Importa archivio',ok:'Importa'})) return;
-  const n=normalize(d);for(const k of ['categories','movements','recurring','learn','imports','holders','accAlias','jars','positions','trades']) S[k]=n[k];
+  const n=normalize(d);for(const k of ['categories','movements','recurring','learn','imports','holders','accAlias','docs','docMarks','jars','positions','trades']) S[k]=n[k];
   S.movements.forEach(m=>{if(!m.id) m.id=uid()});S.recurring.forEach(r=>{if(!r.id) r.id=uid()});
   save();toast(`Importati ${S.movements.length} movimenti`)});
 let rT;addEventListener('resize',()=>{clearTimeout(rT);rT=setTimeout(()=>{if(V.tab==='dash') drawYearChart()},120)});
