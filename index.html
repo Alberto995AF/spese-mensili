@@ -1638,17 +1638,22 @@ async function parsePDF(file){
     return used;
   };
   const clean=s=>s.replace(/\b\d{7,}\b/g,' ').replace(/\s+/g,' ').replace(/\s[A-Z]$/,'').trim(); // codici lunghi e paese finale (" I", " L")
-  const tx=[],extraRows=[],figs=[];let last=null,cont=0,inTable=!useZones,prevY=0,gap=14;
+  const tx=[],extraRows=[],figs=[],period={};let last=null,cont=0,inTable=!useZones,prevY=0,gap=14,ended=false;
   for(const L of lines){
     const text=L.items.map(i=>i.s).join(' ').replace(/\s+/g,' ').trim();
     const amts=L.items.filter(i=>AMT.test(i.s));
     if(!DSTART.test(text)){const tail=(text.match(/([-+]?(?:\d{1,3}(?:\.\d{3})+|\d+),\d{2}-?)\s*(?:€|eur|euro)?\s*$/i)||[])[1];const fg=figOf(text,amts.length?parseNum(amts[amts.length-1].s):parseNum(tail));if(fg) figs.push(fg)}
     // l'imposta di bollo spesso compare solo nel riepilogo, senza data
     if(/^imposta di bollo/i.test(text)&&!DSTART.test(text)&&amts.length){extraRows.push({desc:'Imposta di bollo',amt:parseNum(amts[amts.length-1].s)});continue}
-    if(L.isHdr){inTable=true;last=null;continue}
+    if(L.isHdr){inTable=true;ended=false;last=null;continue}
+    if(ended) continue;
     if(/^totale|dettaglio spese rateizzate|riepilogo generale|^nota bene/i.test(text)){if(useZones) inTable=false;last=null;continue}
     if(!inTable) continue;
-    if(/saldo\s+(iniziale|finale|contabile|disponibile|precedente|al\b)|totale\s+(movimenti|addebiti|accrediti|operazioni)/i.test(text)){last=null;continue}
+    if(/saldo\s+(iniziale|finale|contabile|disponibile|precedente|al\b)|totale\s+(movimenti|addebiti|accrediti|operazioni)/i.test(text)){
+      const sd=text.match(DSTART);
+      if(sd&&/saldo\s+(iniziale|precedente)/i.test(text)) period.from=sd[1];
+      if(sd&&/saldo\s+finale/i.test(text)){period.to=sd[1];if(tx.length) ended=true} // dopo il saldo finale vengono riepiloghi, non movimenti
+      last=null;continue}
     if(last&&L.page!==last.page) last=null;
     const dm=text.match(DSTART);
     if(dm){
@@ -1682,7 +1687,8 @@ async function parsePDF(file){
   const all=lines.map(l=>l.items.map(i=>i.s).join(' ')).join('\n');
   const last4=(all.match(/carta\s*(?:numero|n\.?|:)?\s*[*xX•\s]{4,}(\d{4})/i)||[])[1];
   const issuer=['Nexi','American Express','Amex','Hype','Revolut','BancoPosta','Intesa','UniCredit','Fineco','BPER','Mediolanum','Widiba','Satispay'].find(n=>new RegExp('\\b'+n+'\\b','i').test(all));
-  rows.meta={figs:dedupeFigs(figs),account:last4?`Carta ${issuer?issuer+' ':''}****${last4}`:''};
+  const pf=period.from&&parseDate(period.from),pt=period.to&&parseDate(period.to);
+  rows.meta={figs:dedupeFigs(figs),text:all.slice(0,30000),account:last4?`Carta ${issuer?issuer+' ':''}****${last4}`:'',...(pf&&pt&&pt>pf?{period:{from:addDays(pf,1),to:pt}}:{})};
   return rows;
 }
 function guessHeader(rows){
@@ -1751,16 +1757,22 @@ function impReconCard(){
   const head=r.status==='ok'?`<div class="banner ok"><div><b>✔ I conti tornano.</b> La ${best.what} (${eur(best.calc)}) coincide con «${esc(best.label)}» del documento (${eur(best.doc)}).</div></div>`
     :r.status==='diff'?`<div class="banner"><div><b>⚠ I conti non tornano.</b> La somma dei movimenti letti non coincide con nessun totale o saldo del documento: forse manca una riga o un importo è stato letto male. Controlla l'anteprima prima di importare.</div></div>`
     :`<div class="banner info"><div>Nel file non ho trovato totali o saldi da confrontare. Controlla tu che le somme qui sotto coincidano con l'estratto conto.</div></div>`;
-  const skip=IMP.items.filter(x=>!x.sel&&x.dup!=='si'),dupIn=IMP.items.filter(x=>!x.sel&&x.dup==='si'),skipSum=round2(skip.reduce((a,b)=>a+(b.type==='uscita'?b.amount:-b.amount),0));
+  const skip=IMP.items.filter(x=>!x.sel&&x.dup!=='si'&&!x.rule),dupIn=IMP.items.filter(x=>!x.sel&&x.dup==='si'),ruled=IMP.items.filter(x=>!x.sel&&x.rule),skipSum=round2(skip.reduce((a,b)=>a+(b.type==='uscita'?b.amount:-b.amount),0));
   const skipBox=skip.length?`<div class="banner" style="margin-top:10px"><div style="flex:1"><b>⚠ ${skip.length} ${skip.length===1?'riga non verrà importata':'righe non verranno importate'}</b> (${eur(Math.abs(skipSum))}): dopo l'importazione il riepilogo mostrerà ${eur(Math.abs(skipSum))} ${skipSum>=0?'di uscite in meno':'di entrate in meno'} rispetto all'estratto conto.
     <ul style="margin:6px 0 0;padding-left:18px">${skip.map(x=>`<li>${fmtDate(x.date)} · ${esc(x.desc)} · ${eur(x.amount)}${x.dup==='forse'?' <span class="muted">(sembrava già presente)</span>':''}</li>`).join('')}</ul></div>
     <button class="btn sm" data-act="itselskip">Seleziona queste righe</button></div>`:'';
   const dupNote=dupIn.length?`<p class="small muted" style="margin:8px 0 0">${dupIn.length} ${dupIn.length===1?'riga è':'righe sono'} già nel registro su questo conto (importate in precedenza): non vengono duplicate e il totale resta giusto.</p>`:'';
   const months=[...new Set(IMP.items.map(x=>x.date.slice(0,7)))].sort(),other=IMP.items.filter(x=>IMP.mese&&x.date.slice(0,7)!==IMP.mese).length;
-  const meseBox=(IMP.account||'').trim()&&months.length>1?`<div class="row small" style="margin-top:10px;gap:8px">Conta le spese di questo estratto nel mese di
+  const meseBox=(IMP.account||'').trim()&&months.length>1&&docById(IMP.docId)?.kind!=='conto'&&!isContoAcc(resolveAcc(IMP.account))?`<div class="row small" style="margin-top:10px;gap:8px">Conta le spese di questo estratto nel mese di
     <select data-chg="imese" aria-label="Mese dell'estratto">${months.map(k=>`<option value="${k}" ${IMP.mese===k?'selected':''}>${monthLabel(k)}</option>`).join('')}<option value="" ${!IMP.mese?'selected':''}>— mese di ogni singola spesa —</option></select>
     ${IMP.mese&&other?`<span class="muted">${other} ${other===1?'spesa è':'spese sono'} di un altro mese ma ${other===1?'conta':'contano'} qui, così il totale del mese coincide con l'estratto</span>`:''}</div>`:'';
-  return `<div class="card"><h2>2 · Riconciliazione</h2>${head}${meseBox}${skipBox}${dupNote}
+  const rd=docById(IMP.docId),rsum=t=>round2(ruled.filter(x=>x.type===t).reduce((a,b)=>a+b.amount,0));
+  const ruleNote=rd&&(rd.onlyOut||ruleWords(rd).length)?`<div class="banner info" style="margin-top:10px"><div style="flex:1">Regole di «${esc(rd.name)}»:
+      <label class="row small" style="gap:6px;margin:6px 0"><input type="checkbox" data-chg="docrule" data-k="onlyOut" ${rd.onlyOut?'checked':''} style="width:auto"> importa solo le uscite</label>
+      <label class="small">non importare le righe che contengono <input class="small" data-chg="docrule" data-k="skip" value="${esc(rd.skip||'')}" placeholder="es. CARTA DI CREDITO" style="min-width:220px"></label>
+      ${ruled.length?`<div class="small" style="margin-top:6px">${ruled.length} ${ruled.length===1?'riga non verrà importata':'righe non verranno importate'}${rsum('uscita')?` (uscite ${eur(rsum('uscita'))}`:' ('}${rsum('entrata')?`${rsum('uscita')?', ':''}entrate ${eur(rsum('entrata'))}`:''}): restano nel controllo dei totali qui sopra, ma non diventano movimenti.</div>`:''}</div></div>`
+    :rd?`<p class="small muted" style="margin:8px 0 0">Vuoi importare solo una parte delle righe di «${esc(rd.name)}» (es. solo le uscite, senza le spese della carta di credito)? <a href="#" data-act="docruleon">Aggiungi delle regole</a>.</p>`:'';
+  return `<div class="card"><h2>2 · Riconciliazione</h2>${head}${meseBox}${ruleNote}${skipBox}${dupNote}
   <div class="row small" style="margin:10px 0;gap:16px"><span>Righe lette: <b>${r.n}</b></span><span>Uscite: <b class="neg">${eur(r.out)}</b></span><span>Entrate: <b class="pos">${eur(r.inn)}</b></span><span>Entrate − uscite: <b>${eur(r.net)}</b></span></div>
   ${r.checks.length?`<div class="tblwrap"><table class="small"><thead><tr><th>Voce del documento</th><th class="num">Nel documento</th><th class="num">Calcolato</th><th>Esito</th></tr></thead><tbody>
   ${r.checks.map(c=>`<tr><td>${esc(c.label)}</td><td class="num">${eur(c.doc)}</td><td class="num">${eur(c.calc)}</td>
@@ -1782,8 +1794,8 @@ async function handleFile(file){
     // estratti della carta di credito: le spese sono numeri positivi → li tratto come uscite
     let autoInv=false;
     if(map.mode==='single'&&map.amount>=0){const v=rows.slice(hdr+1).map(r=>parseNum(r[map.amount])).filter(n=>n);autoInv=v.length>=3&&v.filter(n=>n>0).length/v.length>=0.85}
-    const hay=[name,rows.meta?.account||'',...rows.slice(0,80).map(r=>(r||[]).join(' '))].join(' '),chosen=docById(V.impDoc),doc=chosen||detectDoc(hay,resolveAcc(typed||rows.meta?.account||''));
-    IMP={figs:rows.meta?.figs||scanFigures(rows,hdr,map),file:name,rows,hdr,map,invert:autoInv,autoInv,fmt:'dmy',account:doc?resolveAcc(doc.account):resolveAcc(typed||rows.meta?.account||V.lastAcc||''),isPdf:ext==='pdf',docId:doc?.id||'',docAuto:!!doc&&!chosen};
+    const hay=[name,rows.meta?.account||'',rows.meta?.text||'',...rows.slice(0,80).map(r=>(r||[]).join(' '))].join(' '),chosen=docById(V.impDoc),doc=chosen||detectDoc(hay,resolveAcc(typed||rows.meta?.account||''));
+    IMP={figs:rows.meta?.figs||scanFigures(rows,hdr,map),file:name,rows,hdr,map,invert:autoInv,autoInv,fmt:'dmy',account:doc?resolveAcc(doc.account):resolveAcc(typed||rows.meta?.account||V.lastAcc||''),isPdf:ext==='pdf',docId:doc?.id||'',docAuto:!!doc&&!chosen,period:rows.meta?.period||null};
     buildItems();
   }catch(e){console.error(e);IMP=null;notice('Non sono riuscito a leggere il file.\n\n'+e.message,'File non letto')}
   render();
@@ -1793,6 +1805,10 @@ async function handleFile(file){
           match (parole o numeri che compaiono nel file, separati da virgola), from ('AAAA-MM': da quando controllarlo), off}
    Un mese è a posto se c'è un'importazione di quell'estratto che lo copre, oppure se è segnato a mano (docMarks['id|AAAA-MM']). */
 const activeDocs=()=>(S.docs||[]).filter(d=>!d.off);
+const periodEnd=(d,ym)=>{if(d.freq!=='q') return ym;const [y,m]=ym.split('-').map(Number);return y+'-'+pad(Math.ceil(m/3)*3)};
+const ruleWords=d=>String(d?.skip||'').split(',').map(x=>x.trim().toLowerCase()).filter(x=>x.length>=3);
+const isContoAcc=acc=>!!acc&&(S.docs||[]).some(d=>d.kind==='conto'&&d.account&&resolveAcc(d.account)===acc);
+const monthsIn=(from,to)=>{const out=[];for(let m=from.slice(0,7);m<=to.slice(0,7);m=ymAdd(m,1)) out.push(m);return out};
 const docById=id=>(S.docs||[]).find(d=>d.id===id);
 const ymAdd=(ym,n)=>{const [y,m]=ym.split('-').map(Number),d=new Date(y,m-1+n,1);return d.getFullYear()+'-'+pad(d.getMonth()+1)};
 const thisMonth=()=>today().slice(0,7);
@@ -1817,8 +1833,8 @@ function docStatus(d,ym){
   if(files.length) return {k:'ok',files};
   if(S.docMarks?.[d.id+'|'+ym]) return {k:'manual',files};
   if(d.from&&ym<d.from) return {k:'before',files};
-  const cur=thisMonth();
-  return {k:ym>=cur?'next':ym===ymAdd(cur,-1)?'due':'missing',files};
+  const cur=thisMonth(),end=periodEnd(d,ym); // l'estratto arriva a fine periodo: mese o trimestre
+  return {k:end>=cur?'next':end===ymAdd(cur,-1)?'due':'missing',files};
 }
 const DOC_ICON={ok:['✔','pos','importato'],manual:['✎','pos','segnato a mano'],due:['…','warn','da caricare'],missing:['✗','neg','manca'],next:['·','muted','mese in corso'],before:['','muted','non controllato']};
 function docsCard(){
@@ -1828,9 +1844,9 @@ function docsCard(){
   const first=ds.reduce((a,d)=>d.from&&d.from<a?d.from:a,cur),start=[ymAdd(cur,-11),first].sort()[1],months=[];for(let m=start;m<=cur;m=ymAdd(m,1)) months.push(m);
   return `<div class="card"><div class="row between" style="margin-bottom:8px"><h2 style="margin:0">Estratti di ogni mese</h2><button class="btn sm" data-act="docnew">+ Estratto</button></div>
   <div class="tblwrap"><table class="small docgrid"><thead><tr><th>Estratto</th>${months.map(m=>`<th class="num">${MESI3[+m.slice(5)-1]}${m.slice(5)==='01'||m===start?`<div class="muted">${m.slice(0,4)}</div>`:''}</th>`).join('')}</tr></thead><tbody>
-  ${ds.map(d=>`<tr><td class="clk nowrap" data-act="docedit" data-id="${d.id}"><b>${esc(d.name)}</b><div class="muted">${esc([d.bank,d.kind==='carta'?'carta':'conto'].filter(Boolean).join(' · '))} ✎</div></td>
+  ${ds.map(d=>`<tr><td class="clk nowrap" data-act="docedit" data-id="${d.id}"><b>${esc(d.name)}</b><div class="muted">${esc([d.bank,d.kind==='carta'?'carta':'conto',d.freq==='q'?'trimestrale':''].filter(Boolean).join(' · '))} ✎</div></td>
     ${months.map(m=>{const st=docStatus(d,m),[ic,cl,lb]=DOC_ICON[st.k];return `<td class="num ${cl} ${st.k==='before'?'':'clk'}" ${st.k==='before'?'':`data-act="docmonth" data-id="${d.id}" data-m="${m}"`} title="${MESI[+m.slice(5)-1]} ${m.slice(0,4)}: ${lb}${st.files.length?' — '+esc(st.files.map(f=>f.file).join(', ')):''}"><b>${ic}</b></td>`}).join('')}</tr>`).join('')}</tbody></table></div>
-  <p class="small muted" style="margin:8px 0 0">✔ importato · ✎ segnato a mano · … da caricare (mese appena finito) · ✗ manca. Tocca un mese per segnarlo come caricato anche senza file, ad esempio se hai inserito i movimenti a mano. Le carte contano nel mese dell'estratto.</p></div>`;
+  <p class="small muted" style="margin:8px 0 0">✔ importato · ✎ segnato a mano · … da caricare (periodo appena finito) · ✗ manca · <b>·</b> periodo in corso. Tocca un mese per segnarlo come caricato anche senza file, ad esempio se hai inserito i movimenti a mano. Le carte contano nel mese dell'estratto.</p></div>`;
 }
 function docsAlert(){
   const cur=thisMonth(),miss=[];
@@ -1846,7 +1862,7 @@ function suggestDocs(){
   const people=[...new Set(Object.values(S.holders||{}).filter(Boolean))];
   for(const h of people){
     const cards=accounts().filter(a=>holderOf(a)===h).map(a=>({a,n:S.movements.filter(m=>m.account===a).length})).sort((x,y)=>y.n-x.n);
-    out.push({id:uid(),name:'Conto corrente '+h,kind:'conto',bank:'',holder:h,account:'Conto corrente '+h,match:'',from:prev,off:false});
+    out.push({id:uid(),name:'Conto corrente '+h,kind:'conto',bank:'',holder:h,account:'Conto corrente '+h,match:'',from:prev,off:false,onlyOut:true,skip:'CARTA DI CREDITO'});
     const c=cards[0]?.a||'',d4=(c.match(/(\d{4})\D*$/)||[])[1]||'';
     const months=c?S.imports.filter(i=>resolveAcc(i.account)===resolveAcc(c)).flatMap(importMonths).sort():[];
     const bank=(c.match(/carta\s+(\w+)/i)||[])[1]||'';
@@ -1865,14 +1881,17 @@ function openDoc(id){
     <label>Titolare<input id="dcHolder" name="holder" value="${esc(d.holder||'')}" list="holderList3"></label>
     <datalist id="holderList3">${[...new Set(Object.values(S.holders||{}))].map(h=>`<option value="${esc(h)}">`).join('')}</datalist>
     <label>Controlla dal mese<input id="dcFrom" type="month" name="from" value="${esc(d.from||'')}"></label>
+    <label>Arriva ogni<select id="dcFreq" name="freq"><option value="m" ${d.freq!=='q'?'selected':''}>mese</option><option value="q" ${d.freq==='q'?'selected':''}>trimestre</option></select></label>
     <label class="full">Conto o carta nell'app<input id="dcAcc" name="account" list="accList" value="${esc(d.account||'')}" placeholder="vuoto = movimenti senza conto"></label>
     <label class="full">Come lo riconosco nel file<input id="dcMatch" name="match" value="${esc(d.match||'')}" placeholder="es. 1234 (ultime cifre della carta) o una parte dell'IBAN; più voci separate da virgola"></label>
+    <label class="full row small" style="gap:8px"><input type="checkbox" name="onlyOut" ${d.onlyOut?'checked':''} style="width:auto"> Importa solo le uscite (le entrate restano nel controllo dei totali)</label>
+    <label class="full">Non importare le righe che contengono<input id="dcSkip" name="skip" value="${esc(d.skip||'')}" placeholder="es. CARTA DI CREDITO (l'addebito della carta, se importi già il suo estratto)"></label>
     <label class="full row small" style="gap:8px"><input type="checkbox" name="off" ${d.off?'checked':''} style="width:auto"> Non controllarlo più (es. conto chiuso)</label>
     <div class="full small muted">Quando importi un file l'app cerca queste parole o numeri nel nome e nel contenuto: se li trova, sceglie da sola questo estratto e il suo conto. Puoi sempre sceglierlo a mano nella pagina di importazione.</div>
   </div><div class="dlg-f">${id?`<button type="button" class="btn danger" data-act="docdel" data-id="${d.id}" style="margin-right:auto">Elimina</button>`:''}<button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
   fd=>{
     const nd={...d,id:d.id||uid(),name:String(fd.get('name')).trim(),kind:fd.get('kind'),bank:String(fd.get('bank')||'').trim(),holder:String(fd.get('holder')||'').trim(),
-      account:resolveAcc(fd.get('account')),match:String(fd.get('match')||'').trim(),from:String(fd.get('from')||''),off:!!fd.get('off')};
+      account:resolveAcc(fd.get('account')),match:String(fd.get('match')||'').trim(),from:String(fd.get('from')||''),off:!!fd.get('off'),onlyOut:!!fd.get('onlyOut'),skip:String(fd.get('skip')||'').trim(),freq:fd.get('freq')==='q'?'q':'m'};
     if(!nd.name){toast('Scrivi un nome');return false}
     S.docs=[...(S.docs||[]).filter(x=>x.id!==nd.id),nd];save();toast(id?'Estratto aggiornato':'Estratto aggiunto');
   });
@@ -1898,8 +1917,9 @@ function stmtMonth(items){
 function buildItems(){
   const {rows,hdr,map,invert,fmt}=IMP,items=[];
   const exact=new Map(),loose=new Map(),inc=(M,k)=>M.set(k,(M.get(k)||0)+1),take=(M,k)=>{const n=M.get(k)||0;if(n) M.set(k,n-1);return n>0};
-  const acc=resolveAcc(IMP.account); // si confronta solo con lo stesso conto o carta: una carta con sé stessa, i conti (senza carta) con i conti
-  for(const m of S.movements){if((m.account||'')!==acc) continue;const a=m.amount.toFixed(2);inc(exact,m.date+'|'+m.type+'|'+a+'|'+learnKey(m.desc));inc(loose,m.date+'|'+m.type+'|'+a)}
+  const acc=resolveAcc(IMP.account),accs=new Set([acc]); // si confronta solo con lo stesso conto o carta: una carta con sé stessa, i conti (senza carta) con i conti
+  if(isContoAcc(acc)) accs.add(''); // un conto corrente con un nome: prima i suoi movimenti potevano essere senza conto
+  for(const m of S.movements){if(!accs.has(m.account||'')) continue;const a=m.amount.toFixed(2);inc(exact,m.date+'|'+m.type+'|'+a+'|'+learnKey(m.desc));inc(loose,m.date+'|'+m.type+'|'+a)}
   rows.slice(hdr+1).forEach((r,ri)=>{
     const date=parseDate(r[map.date],fmt);if(!date) return;
     const desc=[r[map.desc],map.desc2>=0?r[map.desc2]:''].map(x=>x instanceof Date?'':String(x??'').trim()).filter(Boolean).join(' · ');
@@ -1912,13 +1932,16 @@ function buildItems(){
     // solo i doppioni certi (stessa carta, data, importo ed esercente) partono deselezionati
     items.push({ri,sel:dup!=='si',date,desc:desc||'(senza descrizione)',amount,type,cat:guessCat(desc,type),dup});
   });
+  const d=docById(IMP.docId),words=ruleWords(d);
+  if(d) for(const x of items){const w=words.find(w=>x.desc.toLowerCase().includes(w));
+    x.rule=d.onlyOut&&x.type==='entrata'?'è un\'entrata':w?`contiene «${w}»`:'';if(x.rule) x.sel=false}
   IMP.items=items;
-  if(IMP.meseAuto!==false) IMP.mese=(IMP.account||'').trim()?stmtMonth(items):'';
+  if(IMP.meseAuto!==false) IMP.mese=(IMP.account||'').trim()&&d?.kind!=='conto'&&!isContoAcc(acc)?stmtMonth(items):'';
 }
 /* riconciliazione permanente: i movimenti di ogni importazione devono continuare a sommare al totale dell'estratto */
 function impCheck(i){
   if(!i.stmt) return null;
-  const ms=S.movements.filter(m=>m.imp===i.id),out=ms.filter(m=>m.type==='uscita').reduce((a,b)=>a+b.amount,0),inn=ms.filter(m=>m.type==='entrata').reduce((a,b)=>a+b.amount,0);
+  const ms=S.movements.filter(m=>m.imp===i.id),out=ms.filter(m=>m.type==='uscita').reduce((a,b)=>a+b.amount,0)+(i.ruled?.out||0)+(i.dups?.out||0),inn=ms.filter(m=>m.type==='entrata').reduce((a,b)=>a+b.amount,0)+(i.ruled?.inn||0)+(i.dups?.inn||0);
   const calc=round2(i.stmt.what==='somma delle uscite'?out:i.stmt.what==='somma delle entrate'?inn:inn-out),diff=round2(Math.abs(calc)-Math.abs(i.stmt.value));
   return {calc,diff,ok:Math.abs(diff)<0.005};
 }
@@ -1982,11 +2005,11 @@ function impItemsCard(){
     <select data-chg="itall"><option value="">Assegna una categoria ai selezionati…</option>${S.categories.map(c=>`<option value="${c.id}">${esc(c.name)} (${c.kind})</option>`).join('')}${(S.jars||[]).map(j=>`<option value="jar:${j.id}">🐷 ${esc(j.name)} (salvadanaio)</option>`).join('')}</select></div>
   <div class="tblwrap tall"><table><thead><tr><th></th><th>Data</th><th>Descrizione</th><th>Tipo</th><th>Categoria</th><th class="num">Importo</th></tr></thead><tbody>
   ${it.map((x,i)=>`<tr class="${x.sel?'':'fc'}"><td><input type="checkbox" data-chg="it" data-i="${i}" data-k="sel" ${x.sel?'checked':''}></td><td class="nowrap">${fmtDate(x.date)}</td>
-    <td>${esc(x.desc)} ${x.dup==='si'?'<span class="badge">già presente</span>':x.dup==='forse'?'<span class="badge">forse già presente</span>':''}</td>
+    <td>${esc(x.desc)} ${x.rule?`<span class="badge">non importata: ${esc(x.rule)}</span>`:x.dup==='si'?'<span class="badge">già presente</span>':x.dup==='forse'?'<span class="badge">forse già presente</span>':''}</td>
     <td><select class="inl" data-chg="it" data-i="${i}" data-k="type"><option value="uscita" ${x.type==='uscita'?'selected':''}>Uscita</option><option value="entrata" ${x.type==='entrata'?'selected':''}>Entrata</option></select></td>
     <td><select class="inl" data-chg="it" data-i="${i}" data-k="cat">${catOptions(x.type,x.cat)}</select></td>
     <td class="num ${x.type==='entrata'?'pos':'neg'}"><b>${x.type==='entrata'?'+':'−'}${eur(x.amount)}</b></td></tr>`).join('')}</tbody></table></div>
-  <div class="row" style="justify-content:flex-end;margin-top:12px">${(()=>{const s=reconcile().status;const sk=IMP.items.filter(x=>!x.sel&&x.dup!=='si').length;if(sk) return `<span class="small neg" style="margin-right:auto">⚠ ${sk} ${sk===1?'riga esclusa':'righe escluse'}: il totale non coinciderà con l'estratto</span>`;return s==='ok'?'<span class="small pos" style="margin-right:auto">✔ conti riconciliati</span>':s==='diff'?'<span class="small neg" style="margin-right:auto">⚠ i totali non tornano: controlla prima di importare</span>':''})()}<button class="btn" data-act="impcancel">Annulla</button><button class="btn primary" data-act="impgo" ${sel.length?'':'disabled'}>Importa ${sel.length} movimenti</button></div></div>`;
+  <div class="row" style="justify-content:flex-end;margin-top:12px">${(()=>{const s=reconcile().status;const sk=IMP.items.filter(x=>!x.sel&&x.dup!=='si'&&!x.rule).length;if(sk) return `<span class="small neg" style="margin-right:auto">⚠ ${sk} ${sk===1?'riga esclusa':'righe escluse'}: il totale non coinciderà con l'estratto</span>`;return s==='ok'?'<span class="small pos" style="margin-right:auto">✔ conti riconciliati</span>':s==='diff'?'<span class="small neg" style="margin-right:auto">⚠ i totali non tornano: controlla prima di importare</span>':''})()}<button class="btn" data-act="impcancel">Annulla</button><button class="btn primary" data-act="impgo" ${sel.length?'':'disabled'}>Importa ${sel.length} movimenti</button></div></div>`;
 }
 function bindImp(){
   const d=$('#drop'),fi=$('#fileIn');if(!d) return;
@@ -1999,13 +2022,16 @@ function bindImp(){
 }
 async function doImport(){
   const sel=IMP.items.filter(i=>i.sel);if(!sel.length) return;
-  const rc=reconcile(),best=rc.checks.find(c=>c.ok),skip=IMP.items.filter(x=>!x.sel&&x.dup!=='si');
+  const rc=reconcile(),best=rc.checks.find(c=>c.ok),skip=IMP.items.filter(x=>!x.sel&&x.dup!=='si'&&!x.rule),rl=IMP.items.filter(x=>!x.sel&&x.rule);
   if(rc.status==='diff'&&!await ask('La somma dei movimenti non coincide con i totali del documento.\nImportare comunque?',{title:'I conti non tornano',ok:'Importa comunque'})) return;
   if(skip.length&&!await ask(`${skip.length} ${skip.length===1?'riga non verrà importata':'righe non verranno importate'}: il totale nel riepilogo sarà diverso da quello dell'estratto conto.\nImportare comunque?`,{title:'Righe escluse',ok:'Importa comunque'})) return;
   const stmt=best?{label:best.label,value:best.doc,what:best.what}:null;
-  const acc=resolveAcc($('#impAcc')?.value||IMP.account||''),id=uid(),months=coveredMonths(sel.map(x=>IMP.mese||x.date.slice(0,7)));
+  const acc=resolveAcc($('#impAcc')?.value||IMP.account||''),id=uid(),months=IMP.period?monthsIn(IMP.period.from,IMP.period.to):coveredMonths(sel.map(x=>IMP.mese||x.date.slice(0,7)));
+  const sums=xs=>({out:round2(xs.filter(x=>x.type==='uscita').reduce((a,x)=>a+x.amount,0)),inn:round2(xs.filter(x=>x.type==='entrata').reduce((a,x)=>a+x.amount,0)),n:xs.length});
+  const ruled=rl.length?sums(rl):null,dl=IMP.items.filter(x=>!x.sel&&x.dup==='si'&&!x.rule),dups=dl.length?sums(dl):null; // righe del documento non importate: servono al controllo dei totali
   for(const x of sel){S.movements.push({id:uid(),date:x.date,desc:x.desc,amount:x.amount,type:x.type,cat:x.cat,account:acc,note:'',imp:id,...(IMP.mese&&IMP.mese!==x.date.slice(0,7)?{mese:IMP.mese}:{})});if(x.cat) learn(x.desc,x.cat)}
-  S.imports.unshift({id,date:today(),ts:Date.now(),file:IMP.file,account:acc,count:sel.length,check:rc.status,months,...(IMP.docId?{docId:IMP.docId}:{}),...(stmt&&!skip.length?{stmt}:{})});
+  S.imports.unshift({id,date:today(),ts:Date.now(),file:IMP.file,account:acc,count:sel.length,check:rc.status,months,...(IMP.docId?{docId:IMP.docId}:{}),...(ruled?{ruled}:{}),...(dups?{dups}:{}),...(stmt&&!skip.length?{stmt}:{})});
+  const dd=docById(IMP.docId);if(dd&&!dd.freq&&months.length>=3) dd.freq='q';
   if(acc) V.lastAcc=acc;
   IMP=null;V.impDoc='';V.tab='mov';V.f={q:'',month:'',type:'',cat:'',acc:acc||'',fc:true};
   save();toast(`Importati ${sel.length} movimenti`);
@@ -2071,6 +2097,7 @@ const ACT={
       for(const k in S.learn) if(S.learn[k]===c.id){if(to) S.learn[k]=to;else delete S.learn[k]}save();toast(to?`Categoria eliminata, movimenti spostati in “${cat(to)?.name}”`:'Categoria eliminata')})},
   accedit:a=>openAccount(a.dataset.acc),
   docnew:()=>openDoc(null),
+  docruleon:(a,e)=>{e?.preventDefault?.();const d=docById(IMP?.docId);if(!d) return;Object.assign(d,{onlyOut:true,skip:d.skip||'CARTA DI CREDITO'});save();buildItems();render()},
   docedit:a=>openDoc(a.dataset.id),
   docmonth:a=>openDocMonth(a.dataset.id,a.dataset.m),
   docsuggest:()=>{S.docs=[...(S.docs||[]),...suggestDocs()];save();toast('Estratti creati: controlla banca e riconoscimento con ✎')},
@@ -2084,7 +2111,7 @@ const ACT={
   forget:async()=>{if(await ask('Dimenticare tutte le associazioni esercente → categoria imparate?',{title:'Dimentica',ok:'Dimentica'})){S.learn={};save()}},
   pickfile:()=>{if(!IMP?.loading) $('#fileIn').click()},
   impcancel:()=>{IMP=null;render()},
-  itselskip:()=>{IMP.items.forEach(x=>{if(x.dup!=='si') x.sel=true});render()},
+  itselskip:()=>{IMP.items.forEach(x=>{if(x.dup!=='si'&&!x.rule) x.sel=true});render()},
   itsel:a=>{IMP.items.forEach(i=>i.sel=a.dataset.v==='1');render()},
   impgo:()=>doImport(),
   undoimp:async a=>{const i=S.imports.find(x=>x.id===a.dataset.id),n=S.movements.filter(m=>m.imp===i.id).length;if(await ask(`Annullare l'importazione di “${i.file}”? Verranno eliminati ${n} movimenti.`,{title:'Annulla importazione',ok:'Elimina i movimenti'})){S.movements=S.movements.filter(m=>m.imp!==i.id);S.imports=S.imports.filter(x=>x!==i);save();toast('Importazione annullata')}},
@@ -2112,6 +2139,7 @@ const CHG={
     save();if(n) toast(`Categoria applicata anche a ${n} movimenti simili senza categoria`)},
   msel:a=>{a.checked?V.sel.add(a.dataset.id):V.sel.delete(a.dataset.id);renderMovList()},
   selall:a=>{const real=getMovs().slice(0,V.limit).filter(m=>!m.fc);real.forEach(m=>a.checked?V.sel.add(m.id):V.sel.delete(m.id));renderMovList()},
+  docrule:a=>{const d=docById(IMP?.docId);if(!d) return;if(a.dataset.k==='onlyOut') d.onlyOut=a.checked;else d.skip=a.value.trim();save();buildItems();render()},
   catf:a=>{const c=cat(a.dataset.id);if(!c) return;const v=a.value.trim();if(a.dataset.k==='name'&&!v) return render();c[a.dataset.k]=v;save()},
   imap:a=>{const k=a.dataset.k;
     if(k==='hdr'){IMP.hdr=+a.value;IMP.map=guessMap(IMP.rows,IMP.hdr)}

@@ -25,7 +25,7 @@ function loadPage(file) {
     confirm: () => true, alert() {}, location: { protocol: 'file:', origin: '', pathname: '/' }, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v } } };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv,renameAccount,resolveAcc,accStats,viewCat,suggestDocs,docStatus,detectDoc,ymAdd,thisMonth,docsCard,docsAlert,doImport,coveredMonths};', ctx);
+  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv,renameAccount,resolveAcc,accStats,viewCat,suggestDocs,docStatus,detectDoc,ymAdd,thisMonth,docsCard,docsAlert,doImport,coveredMonths,impCheck};', ctx);
   return ctx.__t;
 }
 
@@ -354,6 +354,23 @@ const CASES = [
     const imp = t.S.imports[0];
     return byText.id === 'd2' && byAcc.id === 'd1' && t.detectDoc('altro', 'Conto Z') === null
       && imp.docId === 'd2' && imp.months.join() === '2026-10' && t.coveredMonths(['2026-09', ...Array(12).fill('2026-10')]).join() === '2026-10';
+  }],
+  ['regole dell\'estratto: solo uscite e senza l\'addebito della carta; i totali del documento continuano a tornare', async t => {
+    t.S.docs = [{ id: 'dB', name: 'Conto B', kind: 'conto', account: 'Conto B', onlyOut: true, skip: 'CARTA DI CREDITO' }];
+    t.S.movements = [mov('old', '2026-01-15', 'SDD Finanziaria', 214.46, '')]; t.S.imports = [];
+    const csv = 'Data;Descrizione;Importo\n13/01/2026;Versamento contanti;800,00\n15/01/2026;Spesa con carta di credito Nexi;-649,27\n15/01/2026;SDD Finanziaria;-214,46\n02/03/2026;Interessi e competenze;-24,48\nTOTALE USCITE;;-888,21';
+    importa(t, csv, 'Conto B'); t.IMP.docId = 'dB'; t.buildItems(); t.IMP.period = { from: '2026-01-01', to: '2026-03-31' };
+    const it = t.IMP.items, rules = it.filter(x => x.rule).length, dup = it.find(x => x.desc === 'SDD Finanziaria').dup;
+    await t.doImport();
+    const imp = t.S.imports[0], d = t.S.docs[0];
+    return rules === 2 && dup === 'si' && t.S.movements.length === 2 && t.S.movements.every(m => !m.mese)
+      && imp.ruled.out === 649.27 && imp.ruled.inn === 800 && imp.months.join() === '2026-01,2026-02,2026-03' && t.impCheck(imp).ok && d.freq === 'q';
+  }],
+  ['estratto trimestrale: i mesi del trimestre in corso non risultano mancanti', t => {
+    const cur = t.thisMonth(), q = m => { const [y, mm] = m.split('-').map(Number); return y + '-' + String(Math.ceil(mm / 3) * 3).padStart(2, '0') };
+    const d = { id: 'dQ', name: 'Conto Q', kind: 'conto', account: 'Conto Q', freq: 'q', from: '2020-01' }; t.S.docs = [d]; t.S.imports = []; t.S.docMarks = {};
+    const qEnd = q(cur), prevQEnd = t.ymAdd(q(t.ymAdd(qEnd, -3)), 0), older = t.ymAdd(prevQEnd, -3);
+    return t.docStatus(d, qEnd).k === 'next' && t.docStatus(d, t.ymAdd(qEnd, -2)).k === 'next' && t.docStatus(d, older).k === 'missing';
   }],
   ['conto corrente con un nome: nelle spese per carta e conto resta fra i conti', t => {
     t.S.docs = [{ id: 'd2', name: 'Conto B', kind: 'conto', account: 'Conto B' }];
