@@ -1611,18 +1611,18 @@ async function parsePDF(file){
   }
   lines.forEach(l=>{l.items.sort((a,b)=>a.x-b.x);l.items=mergeSigns(l.items)});
   const AMT=PDF_AMT;
-  const DSTART=/^(\d{1,2}[\/.\-]\d{1,2}[\/.\-](?:\d{4}|\d{2}))(?!\d)/;
+  const DSTART=/^(\d{1,2}[\/.\-]\d{1,2}[\/.\-](?:\d{4}|\d{2})(?!\d)|\d{1,2} (?:gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)[a-z]*\.? \d{4}(?!\d))/i;
   const DANY=/^\d{1,2}[\/.\-]\d{1,2}[\/.\-](?:\d{4}|\d{2})$/;
   // intestazioni di colonna: dove stanno gli importi (e quali colonne ignorare: altre valute, cambio, saldo)
   const hdr={skip:[]},norm=s=>s.toLowerCase().replace(/[^a-zà-ù€ ]/g,'').replace(/\s+/g,' ').trim();
-  const isAmtHdr=t=>/^(dare|addebiti|uscite|importo addebiti|debiti|addebito|avere|accrediti|entrate|importo accrediti|crediti|accredito|importo|importi|amount|importo in euro|importo eur|importo €|euro)$/.test(t);
+  const isAmtHdr=t=>/^(denaro in uscita|denaro in entrata|dare|addebiti|uscite|importo addebiti|debiti|addebito|avere|accrediti|entrate|importo accrediti|crediti|accredito|importo|importi|amount|importo in euro|importo eur|importo €|euro)$/.test(t);
   for(const L of lines){
     const ts=L.items.map(i=>norm(i.s));
     L.isHdr=ts.some(t=>/^data\b/.test(t))&&ts.some(isAmtHdr);
     if(!L.isHdr) continue;
     L.items.forEach((it,k)=>{const t=ts[k],cx=it.x+it.w/2;
-      if(/^(dare|addebiti|uscite|importo addebiti|debiti|addebito)$/.test(t)) hdr.out??=cx;
-      else if(/^(avere|accrediti|entrate|importo accrediti|crediti|accredito)$/.test(t)) hdr.in??=cx;
+      if(/^(denaro in uscita|dare|addebiti|uscite|importo addebiti|debiti|addebito)$/.test(t)) hdr.out??=cx;
+      else if(/^(denaro in entrata|avere|accrediti|entrate|importo accrediti|crediti|accredito)$/.test(t)) hdr.in??=cx;
       else if(/^(importo|importi|amount|importo in euro|importo eur|importo €|euro)$/.test(t)) hdr.amt??=cx;
       else if(/altre valute|valuta orig|divisa|cambio|^saldo/.test(t)) hdr.skip.push(cx);});
   }
@@ -1637,14 +1637,23 @@ async function parsePDF(file){
     if(!used.length&&amts.length){rec.amt=parseNum(amts[0].s);used.push(amts[0])}
     return used;
   };
-  const clean=s=>s.replace(/\b\d{7,}\b/g,' ').replace(/\s+/g,' ').replace(/\s[A-Z]$/,'').trim(); // codici lunghi e paese finale (" I", " L")
-  const tx=[],extraRows=[],figs=[],period={};let last=null,cont=0,inTable=!useZones,prevY=0,gap=14,ended=false;
+  const clean=s=>s.replace(/ID transazione:\s*\S+/gi,' ').replace(/Carta:\s*[\d*•xX]+/gi,' ').replace(/\s(?:Riferimento|A|Da):\s/g,' · ').replace(/\b\d{7,}\b/g,' ').replace(/\s+/g,' ').replace(/\s[A-Z]$/,'').trim(); // codici lunghi e paese finale (" I", " L")
+  const tx=[],extraRows=[],figs=[],period={};let last=null,cont=0,inTable=!useZones,prevY=0,gap=14,ended=false,offSection=false;
+  const MESE_IT=w=>MESI.findIndex(m=>m.toLowerCase()===String(w).toLowerCase())+1;
   for(const L of lines){
     const text=L.items.map(i=>i.s).join(' ').replace(/\s+/g,' ').trim();
     const amts=L.items.filter(i=>AMT.test(i.s));
+    {const rv=text.match(/^conto \(conto corrente\)\s+([\d.]+,\d{2})\s?€\s+([\d.]+,\d{2})\s?€\s+([\d.]+,\d{2})\s?€\s+(-?[\d.]+,\d{2})\s?€/i);
+      if(rv){figs.push({label:'Denaro in uscita (riepilogo)',value:-parseNum(rv[2]),kind:'total'},{label:'Denaro in entrata (riepilogo)',value:parseNum(rv[3]),kind:'total'},{label:'Saldo iniziale',value:parseNum(rv[1]),kind:'start'},{label:'Saldo di chiusura',value:parseNum(rv[4]),kind:'end'});continue}}
     if(!DSTART.test(text)){const tail=(text.match(/([-+]?(?:\d{1,3}(?:\.\d{3})+|\d+),\d{2}-?)\s*(?:€|eur|euro)?\s*$/i)||[])[1];const fg=figOf(text,amts.length?parseNum(amts[amts.length-1].s):parseNum(tail));if(fg) figs.push(fg)}
     // l'imposta di bollo spesso compare solo nel riepilogo, senza data
-    if(/^imposta di bollo/i.test(text)&&!DSTART.test(text)&&amts.length){extraRows.push({desc:'Imposta di bollo',amt:parseNum(amts[amts.length-1].s)});continue}
+    if(/^imposta di bollo/i.test(text)&&!/nel caso|giacenza|condizion|se la /i.test(text)&&!offSection&&!ended&&!DSTART.test(text)&&amts.length){extraRows.push({desc:'Imposta di bollo',amt:parseNum(amts[amts.length-1].s)});continue}
+    if(/^transazioni\b/i.test(text)&&!DSTART.test(text)){ // "Transazioni del conto dal giorno 2 gennaio 2026 al giorno 31 marzo 2026", "Transazioni deposito…"
+      offSection=!/del conto|conto corrente/i.test(text);last=null;
+      const pm=!offSection&&text.match(/dal giorno (\d{1,2}) (\w+) (\d{4}) al giorno (\d{1,2}) (\w+) (\d{4})/i);
+      if(pm&&MESE_IT(pm[2])&&MESE_IT(pm[5])) period.direct={from:pm[3]+'-'+pad(MESE_IT(pm[2]))+'-'+pad(+pm[1]),to:pm[6]+'-'+pad(MESE_IT(pm[5]))+'-'+pad(+pm[4])};
+      continue}
+    if(offSection) continue;
     if(L.isHdr){inTable=true;ended=false;last=null;continue}
     if(ended) continue;
     if(/^totale|dettaglio spese rateizzate|riepilogo generale|^nota bene/i.test(text)){if(useZones) inTable=false;last=null;continue}
@@ -1688,7 +1697,7 @@ async function parsePDF(file){
   const last4=(all.match(/carta\s*(?:numero|n\.?|:)?\s*[*xX•\s]{4,}(\d{4})/i)||[])[1];
   const issuer=['Nexi','American Express','Amex','Hype','Revolut','BancoPosta','Intesa','UniCredit','Fineco','BPER','Mediolanum','Widiba','Satispay'].find(n=>new RegExp('\\b'+n+'\\b','i').test(all));
   const pf=period.from&&parseDate(period.from),pt=period.to&&parseDate(period.to);
-  rows.meta={figs:dedupeFigs(figs),text:all.slice(0,30000),account:last4?`Carta ${issuer?issuer+' ':''}****${last4}`:'',...(pf&&pt&&pt>pf?{period:{from:addDays(pf,1),to:pt}}:{})};
+  rows.meta={figs:dedupeFigs(figs),text:all.slice(0,30000),account:last4?`Carta ${issuer?issuer+' ':''}****${last4}`:'',...(period.direct?{period:period.direct}:pf&&pt&&pt>pf?{period:{from:addDays(pf,1),to:pt}}:{})};
   return rows;
 }
 function guessHeader(rows){
@@ -1770,6 +1779,8 @@ function impReconCard(){
   const ruleNote=rd&&(rd.onlyOut||ruleWords(rd).length)?`<div class="banner info" style="margin-top:10px"><div style="flex:1">Regole di «${esc(rd.name)}»:
       <label class="row small" style="gap:6px;margin:6px 0"><input type="checkbox" data-chg="docrule" data-k="onlyOut" ${rd.onlyOut?'checked':''} style="width:auto"> importa solo le uscite</label>
       <label class="small">non importare le righe che contengono <input class="small" data-chg="docrule" data-k="skip" value="${esc(rd.skip||'')}" placeholder="es. CARTA DI CREDITO" style="min-width:220px"></label>
+      <div class="small muted">Voci separate da virgola; con <b>!</b> un'eccezione: «giroconto !celibato» esclude i giroconti ma non quelli per il celibato.</div>
+      ${IMP.items.some(x=>x.giro&&x.sel)?`<div class="small" style="margin-top:6px;color:var(--warn)">⚠ ${IMP.items.filter(x=>x.giro&&x.sel).length} righe sembrano giroconti ma non sono coperte dalle regole: le importo come spese, controllale nell'elenco (segno «forse giroconto»).</div>`:''}
       ${ruled.length?`<div class="small" style="margin-top:6px">${ruled.length} ${ruled.length===1?'riga non verrà importata':'righe non verranno importate'}${rsum('uscita')?` (uscite ${eur(rsum('uscita'))}`:' ('}${rsum('entrata')?`${rsum('uscita')?', ':''}entrate ${eur(rsum('entrata'))}`:''}): restano nel controllo dei totali qui sopra, ma non diventano movimenti.</div>`:''}</div></div>`
     :rd?`<p class="small muted" style="margin:8px 0 0">Vuoi importare solo una parte delle righe di «${esc(rd.name)}» (es. solo le uscite, senza le spese della carta di credito)? <a href="#" data-act="docruleon">Aggiungi delle regole</a>.</p>`:'';
   return `<div class="card"><h2>2 · Riconciliazione</h2>${head}${meseBox}${ruleNote}${skipBox}${dupNote}
@@ -1806,7 +1817,15 @@ async function handleFile(file){
    Un mese è a posto se c'è un'importazione di quell'estratto che lo copre, oppure se è segnato a mano (docMarks['id|AAAA-MM']). */
 const activeDocs=()=>(S.docs||[]).filter(d=>!d.off);
 const periodEnd=(d,ym)=>{if(d.freq!=='q') return ym;const [y,m]=ym.split('-').map(Number);return y+'-'+pad(Math.ceil(m/3)*3)};
-const ruleWords=d=>String(d?.skip||'').split(',').map(x=>x.trim().toLowerCase()).filter(x=>x.length>=3);
+/* regole "non importare le righe che contengono": voci separate da virgola; "!parola" è un'eccezione (es. "giroconto !celibato") */
+const ruleWords=d=>String(d?.skip||'').split(',').map(x=>{const parts=x.trim().toLowerCase().split(/\s+!/);return {w:parts[0].replace(/^!/,'').trim(),not:parts.slice(1).map(n=>n.trim()).filter(Boolean)}}).filter(r=>r.w.length>=3);
+const ruleHit=(rules,desc)=>{const t=String(desc||'').toLowerCase();return rules.find(r=>t.includes(r.w)&&!r.not.some(n=>t.includes(n)))};
+/* sembra un giroconto (verso un conto vostro): si importa lo stesso, ma con un avviso da controllare */
+function looksGiro(desc){
+  const t=String(desc||'').toLowerCase();if(/giroconto|girofondi|trasferimento fra|conto deposito|robo portfolio/.test(t)) return true;
+  const names=[...new Set(Object.values(S.holders||{}).filter(Boolean).map(n=>n.toLowerCase()))];
+  return /^(to|a|bonifico( disposto)? a|bon\.? a|bonifico a favore di)\s/.test(t)&&names.some(n=>new RegExp('\\b'+n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b').test(t));
+}
 const isContoAcc=acc=>!!acc&&(S.docs||[]).some(d=>d.kind==='conto'&&d.account&&resolveAcc(d.account)===acc);
 const monthsIn=(from,to)=>{const out=[];for(let m=from.slice(0,7);m<=to.slice(0,7);m=ymAdd(m,1)) out.push(m);return out};
 const docById=id=>(S.docs||[]).find(d=>d.id===id);
@@ -1885,7 +1904,8 @@ function openDoc(id){
     <label class="full">Conto o carta nell'app<input id="dcAcc" name="account" list="accList" value="${esc(d.account||'')}" placeholder="vuoto = movimenti senza conto"></label>
     <label class="full">Come lo riconosco nel file<input id="dcMatch" name="match" value="${esc(d.match||'')}" placeholder="es. 1234 (ultime cifre della carta) o una parte dell'IBAN; più voci separate da virgola"></label>
     <label class="full row small" style="gap:8px"><input type="checkbox" name="onlyOut" ${d.onlyOut?'checked':''} style="width:auto"> Importa solo le uscite (le entrate restano nel controllo dei totali)</label>
-    <label class="full">Non importare le righe che contengono<input id="dcSkip" name="skip" value="${esc(d.skip||'')}" placeholder="es. CARTA DI CREDITO (l'addebito della carta, se importi già il suo estratto)"></label>
+    <label class="full">Non importare le righe che contengono<input id="dcSkip" name="skip" value="${esc(d.skip||'')}" placeholder="es. CARTA DI CREDITO, giroconto !celibato"></label>
+    <div class="full small muted">Voci separate da virgola. Con <b>!</b> aggiungi un'eccezione: «giroconto !celibato» esclude le righe con «giroconto» tranne quelle con «celibato».</div>
     <label class="full row small" style="gap:8px"><input type="checkbox" name="off" ${d.off?'checked':''} style="width:auto"> Non controllarlo più (es. conto chiuso)</label>
     <div class="full small muted">Quando importi un file l'app cerca queste parole o numeri nel nome e nel contenuto: se li trova, sceglie da sola questo estratto e il suo conto. Puoi sempre sceglierlo a mano nella pagina di importazione.</div>
   </div><div class="dlg-f">${id?`<button type="button" class="btn danger" data-act="docdel" data-id="${d.id}" style="margin-right:auto">Elimina</button>`:''}<button type="button" class="btn" data-act="close">Annulla</button><button class="btn primary">Salva</button></div></form>`,
@@ -1933,8 +1953,10 @@ function buildItems(){
     items.push({ri,sel:dup!=='si',date,desc:desc||'(senza descrizione)',amount,type,cat:guessCat(desc,type),dup});
   });
   const d=docById(IMP.docId),words=ruleWords(d);
-  if(d) for(const x of items){const w=words.find(w=>x.desc.toLowerCase().includes(w));
-    x.rule=d.onlyOut&&x.type==='entrata'?'è un\'entrata':w?`contiene «${w}»`:'';if(x.rule) x.sel=false}
+  const strict=d&&(d.onlyOut||words.length); // l'estratto ha delle regole: i giroconti veri li escludono loro
+  if(d) for(const x of items){const w=ruleHit(words,x.desc);
+    x.rule=d.onlyOut&&x.type==='entrata'?'è un\'entrata':w?`contiene «${w.w}»`:'';if(x.rule) x.sel=false;
+    else if(strict&&x.type==='uscita'){x.giro=looksGiro(x.desc);if(cat(x.cat)?.kind==='giroconto') x.cat=''}}
   IMP.items=items;
   if(IMP.meseAuto!==false) IMP.mese=(IMP.account||'').trim()&&d?.kind!=='conto'&&!isContoAcc(acc)?stmtMonth(items):'';
 }
@@ -2005,7 +2027,7 @@ function impItemsCard(){
     <select data-chg="itall"><option value="">Assegna una categoria ai selezionati…</option>${S.categories.map(c=>`<option value="${c.id}">${esc(c.name)} (${c.kind})</option>`).join('')}${(S.jars||[]).map(j=>`<option value="jar:${j.id}">🐷 ${esc(j.name)} (salvadanaio)</option>`).join('')}</select></div>
   <div class="tblwrap tall"><table><thead><tr><th></th><th>Data</th><th>Descrizione</th><th>Tipo</th><th>Categoria</th><th class="num">Importo</th></tr></thead><tbody>
   ${it.map((x,i)=>`<tr class="${x.sel?'':'fc'}"><td><input type="checkbox" data-chg="it" data-i="${i}" data-k="sel" ${x.sel?'checked':''}></td><td class="nowrap">${fmtDate(x.date)}</td>
-    <td>${esc(x.desc)} ${x.rule?`<span class="badge">non importata: ${esc(x.rule)}</span>`:x.dup==='si'?'<span class="badge">già presente</span>':x.dup==='forse'?'<span class="badge">forse già presente</span>':''}</td>
+    <td>${esc(x.desc)} ${x.rule?`<span class="badge">non importata: ${esc(x.rule)}</span>`:x.giro&&x.sel?`<span class="badge" style="color:var(--warn)" title="Si importa come spesa: togli la spunta se è un giroconto">forse giroconto</span>`:x.dup==='si'?'<span class="badge">già presente</span>':x.dup==='forse'?'<span class="badge">forse già presente</span>':''}</td>
     <td><select class="inl" data-chg="it" data-i="${i}" data-k="type"><option value="uscita" ${x.type==='uscita'?'selected':''}>Uscita</option><option value="entrata" ${x.type==='entrata'?'selected':''}>Entrata</option></select></td>
     <td><select class="inl" data-chg="it" data-i="${i}" data-k="cat">${catOptions(x.type,x.cat)}</select></td>
     <td class="num ${x.type==='entrata'?'pos':'neg'}"><b>${x.type==='entrata'?'+':'−'}${eur(x.amount)}</b></td></tr>`).join('')}</tbody></table></div>

@@ -25,7 +25,7 @@ function loadPage(file) {
     confirm: () => true, alert() {}, location: { protocol: 'file:', origin: '', pathname: '/' }, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v } } };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv,renameAccount,resolveAcc,accStats,viewCat,suggestDocs,docStatus,detectDoc,ymAdd,thisMonth,docsCard,docsAlert,doImport,coveredMonths,impCheck};', ctx);
+  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv,renameAccount,resolveAcc,accStats,viewCat,suggestDocs,docStatus,detectDoc,ymAdd,thisMonth,docsCard,docsAlert,doImport,coveredMonths,impCheck,looksGiro};', ctx);
   return ctx.__t;
 }
 
@@ -36,6 +36,7 @@ function importa(t, csv, account) {
   t.buildItems();
   return t.IMP.items;
 }
+const cat = (t, id) => t.S.categories.find(c => c.id === id)?.kind;
 const mov = (id, date, desc, amount, account, extra = {}) => ({ id, date, desc, amount, type: 'uscita', cat: '', account, note: '', ...extra });
 const ALB = 'Carta Nexi ****1111', CIN = 'Carta Nexi ****2222';
 
@@ -365,6 +366,16 @@ const CASES = [
     const imp = t.S.imports[0], d = t.S.docs[0];
     return rules === 2 && dup === 'si' && t.S.movements.length === 2 && t.S.movements.every(m => !m.mese)
       && imp.ruled.out === 649.27 && imp.ruled.inn === 800 && imp.months.join() === '2026-01,2026-02,2026-03' && t.impCheck(imp).ok && d.freq === 'q';
+  }],
+  ['regole con eccezioni: «giroconto !celibato»; i bonifici a sé stessi non coperti restano spese con l\'avviso', async t => {
+    t.S.holders = { '1111': 'Mario' }; t.S.movements = []; t.S.imports = [];
+    t.S.docs = [{ id: 'dR', name: 'Conto R', kind: 'conto', account: 'Conto R', onlyOut: true, skip: 'giroconto !celibato, conto deposito' }];
+    const csv = 'Data;Descrizione;Importo\n22/01/2026;To Mario Rossi · Giroconto;-600,00\n05/03/2026;To Mario Rossi · Giroconto per addio al celibato;-139,00\n26/03/2026;To Mario Rossi · Mutuo;-690,00\n25/02/2026;A EUR Conto deposito senza vincoli;-11,00\n27/03/2026;Doreca Store;-43,00\n22/01/2026;Da EUR Conto deposito;600,00';
+    importa(t, csv, 'Conto R'); t.IMP.docId = 'dR'; t.buildItems();
+    const it = t.IMP.items, by = d => it.find(x => x.desc.includes(d));
+    return !it[0].sel && /giroconto/.test(it[0].rule) && by('celibato').sel && by('celibato').giro && cat(t, by('celibato').cat) !== 'giroconto'
+      && by('Mutuo').sel && by('Mutuo').giro && !by('Conto deposito senza').sel && by('Doreca').sel && !by('Doreca').giro && !by('Da EUR').sel
+      && t.looksGiro('Bonifico a Mario Rossi') && !t.looksGiro('To Gianni Verdi · Macchina');
   }],
   ['estratto trimestrale: i mesi del trimestre in corso non risultano mancanti', t => {
     const cur = t.thisMonth(), q = m => { const [y, mm] = m.split('-').map(Number); return y + '-' + String(Math.ceil(mm / 3) * 3).padStart(2, '0') };
