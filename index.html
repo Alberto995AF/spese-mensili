@@ -438,7 +438,7 @@ document.addEventListener('submit',async e=>{
 function exportState(){return {v:1,catVer:2,exported:new Date().toISOString(),categories:S.categories,movements:S.movements.map(normMov),recurring:S.recurring.map(normRec),learn:S.learn,imports:S.imports,holders:S.holders,accAlias:S.accAlias,docs:S.docs,docMarks:S.docMarks,jars:S.jars,positions:(S.positions||[]).map(normPos),trades:(S.trades||[]).map(normTrade)}}
 function saveFile(filename,data){
   const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([data],{type:filename.endsWith('.csv')?'text/csv;charset=utf-8':'application/json'}));
+  a.href=URL.createObjectURL(new Blob([data],{type:filename.endsWith('.csv')?'text/csv;charset=utf-8':filename.endsWith('.md')?'text/markdown;charset=utf-8':'application/json'}));
   a.download=filename;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1500);
   toast('File pronto: '+filename);
 }
@@ -1012,13 +1012,48 @@ function invTotals(){
   let realized=0,divs=0;for(const p of S.positions||[]){const st=posStats(p.id);realized+=st.realized||0;divs+=st.divs}
   return {n:r.length,value,cost,pl:withCost.length?round2(withCost.reduce((a,x)=>a+x.pl,0)):null,day:round2(r.reduce((a,x)=>a+(x.day||0),0)),missingAvg:r.length-withCost.length,realized:round2(realized),divs:round2(divs)};
 }
+function invMarkdown(today=new Date().toISOString().slice(0,10)){ // riepilogo degli investimenti in Markdown, leggibile anche come testo
+  const rows=invRows(),t=invTotals(),st=mkt('_stato'),num=(v,d=2,D=d)=>v.toLocaleString('it-IT',{useGrouping:'always',minimumFractionDigits:d,maximumFractionDigits:D}),q=v=>num(v,0,8),
+    e=v=>v==null?'—':num(v)+' €',ep=v=>v==null?'—':num(v,2,4)+' €',sg=v=>v==null?'—':(v>0?'+':v<0?'−':'')+num(Math.abs(v))+' €',pc=v=>v==null?'':` (${v>0?'+':v<0?'−':''}${num(Math.abs(v))}%)`,
+    dt=d=>d?d.slice(8,10)+'/'+d.slice(5,7)+'/'+d.slice(0,4):'',brk=p=>{const b=posStats(p.id).brokers;return (b.length?b:[p.broker]).filter(Boolean).join(' + ')||'—'},
+    parts=x=>{const b=posStats(x.p.id).brokers;if(b.length<2||x.price==null) return [{b:brk(x.p),value:x.value,pl:x.pl,cost:x.cost}];
+      return b.map(k=>{const s=posStats(x.p.id,k),value=round2(s.qty*x.price);return {b:k,qty:s.qty,avg:s.avg,value,cost:s.cost,pl:s.cost!=null?round2(value-s.cost):null}})};
+  const L=[`# Investimenti al ${dt(today)}`,''];
+  L.push(st.at?`Prezzi aggiornati il ${new Date(st.at).toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'})}. Importi in euro.`:'Prezzi non ancora aggiornati: valori calcolati con l\'ultimo prezzo noto. Importi in euro.','');
+  if(!rows.length) return L.concat(['Nessun titolo.','']).join('\n');
+  L.push('## In sintesi','',`- **Valore attuale:** ${e(t.value)}`,`- **Investito:** ${t.cost?e(t.cost):'—'}${t.missingAvg?` (manca il prezzo medio di ${t.missingAvg} ${t.missingAvg===1?'titolo':'titoli'})`:''}`,
+    `- **Guadagno / perdita:** ${t.pl!=null?sg(t.pl)+pc(t.cost?t.pl/t.cost*100:null):'—'}`,`- **Variazione dell'ultima seduta:** ${sg(t.day)}`);
+  if(t.realized) L.push(`- **Realizzato con le vendite:** ${sg(t.realized)}`);
+  if(t.divs) L.push(`- **Dividendi incassati:** ${e(t.divs)}`);
+  L.push('','## Titoli in breve','','| Titolo | Valore | Guadagno |','|---|---:|---:|');
+  rows.forEach(x=>L.push(`| ${x.p.name.replace(/\|/g,'/')} | ${e(x.value)} | ${sg(x.pl)}${pc(x.plPct)} |`));
+  L.push(`| **Totale** | **${e(t.value)}** | **${t.pl!=null?sg(t.pl):'—'}** |`,'');
+  const group=(key,title,label)=>{const g={};rows.forEach(x=>{for(const [k,y] of key(x)){const a=g[k]=g[k]||{value:0,cost:0,pl:0};a.value+=y.value||0;if(y.pl!=null){a.cost+=y.cost;a.pl+=y.pl}}});
+    L.push(`## ${title}`,'',`| ${label} | Valore | Peso | Guadagno |`,'|---|---:|---:|---:|');
+    Object.entries(g).sort((a,b)=>b[1].value-a[1].value).forEach(([k,a])=>L.push(`| ${k} | ${e(a.value)} | ${t.value?num(a.value/t.value*100,1)+'%':'—'} | ${sg(round2(a.pl))} |`));L.push('')};
+  group(x=>parts(x).map(y=>[y.b,y]),'Per broker','Broker');
+  group(x=>[[INV_KIND[x.p.kind]||x.p.kind,x]],'Per tipo','Tipo');
+  L.push('## Dettaglio','');
+  rows.forEach((x,i)=>{const p=x.p,g=p.kind==='gestita';
+    L.push(`### ${i+1}. ${p.name}`,'',[INV_KIND[p.kind]||p.kind,brk(p),p.isin?'ISIN '+p.isin:'',p.symbol?'simbolo '+p.symbol:''].filter(Boolean).join(' · '),'');
+    if(g) L.push(`- **Valore:** ${e(x.value)}${p.refDate?` (dall'estratto del ${dt(p.refDate)})`:''}`,`- **Versato:** ${e(x.cost)}`);
+    else L.push(`- **Quantità:** ${q(p.qty)}`,`- **Prezzo medio di acquisto:** ${ep(p.avg)}`,`- **Prezzo attuale:** ${ep(x.price)}${x.live?(x.m.changePct!=null?` (${x.m.changePct>=0?'+':'−'}${num(Math.abs(x.m.changePct))}% nell'ultima seduta)`:''):p.refDate?` (ultimo noto, del ${dt(p.refDate)})`:''}`,
+      `- **Investito:** ${e(x.cost)}`,`- **Valore:** ${e(x.value)}`);
+    const pp=parts(x);if(pp.length>1) L.push('- **Per broker:**',...pp.map(y=>`  - ${y.b}: ${q(y.qty)} a ${ep(y.avg)}, valore ${e(y.value)}, guadagno ${sg(y.pl)}`));
+    L.push(`- **Guadagno / perdita:** ${sg(x.pl)}${pc(x.plPct)}`,`- **Peso sul totale:** ${t.value&&x.value!=null?num(x.value/t.value*100,1)+'%':'—'}`);
+    const s=posStats(p.id);if(s.realized) L.push(`- **Realizzato con le vendite:** ${sg(s.realized)}`);if(s.divs) L.push(`- **Dividendi incassati:** ${e(s.divs)}`);
+    L.push('');
+  });
+  L.push('## Note','','- Prezzo medio e quantità vengono dalle operazioni registrate nell\'app.','- Le gestioni (robo-advisor) sono una voce unica: il valore è quello dell\'ultimo estratto, non segue i prezzi giornalieri.','');
+  return L.join('\n');
+}
 const pct=v=>(v>=0?'+':'')+v.toLocaleString('it-IT',{maximumFractionDigits:2,minimumFractionDigits:2})+'%';
 const qtyFmt=q=>q.toLocaleString('it-IT',{maximumFractionDigits:6});
 function viewInv(){
   const rows=invRows(),t=invTotals(),st=mkt('_stato');
   let h=`<div class="stack">${demoBanner()}
   <div class="row between"><div class="small muted">${st.at?`Prezzi e notizie aggiornati il ${new Date(st.at).toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'})}`:'Prezzi e notizie non ancora aggiornati'}</div>
-    <div class="row"><button class="btn" data-act="invimp">Importa PDF del broker</button><button class="btn" data-act="trdnew">+ Operazione</button><button class="btn" data-act="posnew">+ Titolo</button><button class="btn primary" data-act="invupd">Aggiorna ora</button></div></div>`;
+    <div class="row"><button class="btn" data-act="invimp">Importa PDF del broker</button><button class="btn" data-act="trdnew">+ Operazione</button><button class="btn" data-act="posnew">+ Titolo</button><button class="btn" data-act="invmd" title="Scarica un riepilogo dei titoli in formato Markdown">Scarica riepilogo</button><button class="btn primary" data-act="invupd">Aggiorna ora</button></div></div>`;
   if(!rows.length) return h+`<div class="card empty">Nessun titolo. Importa l'<b>Estratto del patrimonio</b> di Trade Republic (PDF) oppure aggiungi un titolo a mano.<br><br><button class="btn primary" data-act="invimp">Importa estratto Trade Republic</button></div></div>`;
   h+=`<div class="grid kpis">${kpi('Valore attuale',eur(t.value),`${t.n} titoli`)}
     ${kpi('Investito',t.cost?eur(t.cost):'—',t.missingAvg?`manca il costo di ${t.missingAvg} ${t.missingAvg===1?'voce':'voci'}`:'somma dei prezzi medi di acquisto')}
@@ -2081,6 +2116,7 @@ const ACT={
   newrec:()=>openRec(null),
   newjar:()=>openJar(null),
   invupd:()=>refreshMarket(true),
+  invmd:()=>{const d=new Date().toISOString().slice(0,10);saveFile(`Investimenti ${d}.md`,invMarkdown(d))},
   invimp:()=>$('#invFile').click(),
   posnew:()=>openPos(null),
   trdnew:a=>{if(dlg.open) dlg.close();openTrade(null,{pos:a.dataset.pos||''})},

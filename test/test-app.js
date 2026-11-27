@@ -25,7 +25,7 @@ function loadPage(file) {
     confirm: () => true, alert() {}, location: { protocol: 'file:', origin: '', pathname: '/' }, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v } } };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv,renameAccount,resolveAcc,accStats,viewCat,suggestDocs,docStatus,detectDoc,ymAdd,thisMonth,docsCard,docsAlert,doImport,coveredMonths,impCheck,looksGiro};', ctx);
+  vm.runInContext(js + '\n;globalThis.__t={get S(){return S},set S(v){S=v},get IMP(){return IMP},set IMP(v){IMP=v},buildItems,reconcile,parseCSV,guessHeader,guessMap,scanFigures,impCheck,mergeSigns,PDF_AMT,parseNum,spendByAccount,stmtMonth,yearData,merchantKey,doImport,catBreakdown,jarBalance,savedIn,jarForecast,viewJar,guessCat,DB,setRemote,resetRemote,applyRemote,save,parseTRHoldings,invRows,invTotals,defaultNewsQuery,guessKind,parseTRTrade,posStats,tradeStatus,syncPositions,parseRevolut,suggestAccount,managedFor,managedValue,invRows,normPos,viewInv,renameAccount,resolveAcc,accStats,viewCat,suggestDocs,docStatus,detectDoc,ymAdd,thisMonth,docsCard,docsAlert,doImport,coveredMonths,impCheck,looksGiro,invMarkdown};', ctx);
   return ctx.__t;
 }
 
@@ -412,6 +412,33 @@ const CASES = [
       && t.managedFor(r) === g && t.managedFor({ positions: [{ isin: 'US0000000003' }] }) === null
       && g.values[r.date] === 102.5 && g.isins.length === 2 && row.value === 102.5 && row.pl === 12.5
       && /Robo[\s\S]*versato/.test(t.viewInv());
+  }],
+  ['riepilogo investimenti in Markdown leggibile: sintesi, tabelle strette, dettaglio per titolo, gestione come voce unica', t => {
+    t.S.positions = [
+      t.normPos({ id: 'IE0000000001', isin: 'IE0000000001', name: 'Esempio World | Acc', kind: 'etf', qty: 2.5, avg: 100, refPrice: 120, refDate: '2026-11-20', broker: 'Broker A' }),
+      t.normPos({ id: 'GEST-1', name: 'Robo', kind: 'gestita', qty: 1, avg: 90, refPrice: 85, refDate: '2026-11-24', broker: 'Broker B', values: { '2026-11-24': 85 } }),
+    ];
+    t.S.trades = [];
+    const md = t.invMarkdown('2026-11-27'), lines = md.split('\n');
+    const maxCols = Math.max(...lines.filter(l => l.startsWith('|')).map(l => l.split('|').length - 2));
+    return md.startsWith('# Investimenti al 27/11/2026')
+      && /\*\*Valore attuale:\*\* 385,00 €/.test(md) && /\*\*Investito:\*\* 340,00 €/.test(md) && /\+45,00 € \(\+13,24%\)/.test(md)
+      && /\| Esempio World \/ Acc \| 300,00 € \| \+50,00 € \(\+20,00%\) \|/.test(md)   // il | nel nome non rompe la tabella
+      && /### 1\. Esempio World \| Acc/.test(md) && /- \*\*Quantità:\*\* 2,5/.test(md) && /- \*\*Prezzo medio di acquisto:\*\* 100,00 €/.test(md)
+      && /### 2\. Robo/.test(md) && /dall'estratto del 24\/11\/2026/.test(md) && /- \*\*Versato:\*\* 90,00 €/.test(md) && /−5,00 €/.test(md)
+      && !/### 2\. Robo[\s\S]*Quantità/.test(md)
+      && /\| Broker A \| 300,00 € \| 77,9% \|/.test(md) && maxCols <= 4;
+  }],
+  ['riepilogo Markdown: titolo su due broker diviso per broker, migliaia con il punto', t => {
+    t.S.positions = [t.normPos({ id: 'US0000000009', isin: 'US0000000009', name: 'Esempio Corp', kind: 'azione', qty: 0, avg: null, refPrice: 1000, refDate: '2026-11-20', broker: 'Broker A' })];
+    t.S.trades = [
+      { id: 't1', pos: 'US0000000009', date: '2026-01-02', type: 'buy', qty: 3, price: 900, fees: 0, taxes: 0, broker: 'Broker A', currency: 'EUR', fx: 1 },
+      { id: 't2', pos: 'US0000000009', date: '2026-02-02', type: 'buy', qty: 0.5, price: 1100, fees: 0, taxes: 0, broker: 'Broker B', currency: 'EUR', fx: 1 }];
+    t.syncPositions();
+    const md = t.invMarkdown('2026-11-27');
+    return /\*\*Valore attuale:\*\* 3\.500,00 €/.test(md)
+      && /\| Broker A \| 3\.000,00 € \| 85,7% \| \+300,00 € \|/.test(md) && /\| Broker B \| 500,00 € \| 14,3% \| −50,00 € \|/.test(md)
+      && /  - Broker A: 3 a 900,00 €, valore 3\.000,00 €, guadagno \+300,00 €/.test(md) && /  - Broker B: 0,5 a 1\.100,00 €/.test(md);
   }],
 ];
 
